@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { startLocalApiServer } from "@feas/api";
 import { initFeasProject, listLogs, resolveFeasConfig, runBuild, runDoctor, runRelease, runSubmit } from "@feas/core";
 import { Command } from "commander";
 
@@ -255,6 +257,27 @@ program
         }
       }
     }
+  });
+
+program
+  .command("open")
+  .description("Start local dashboard API")
+  .option("--port <port>", "Local dashboard/API port", "4545")
+  .action(async (options) => {
+    const parsedPort = Number(options.port);
+    if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) {
+      throw new Error(`Invalid port '${options.port}'.`);
+    }
+
+    const token = randomBytes(16).toString("hex");
+    const server = await startLocalApiServer({
+      port: parsedPort,
+      token,
+    });
+
+    process.stdout.write(`FEAS local API started on 127.0.0.1:${parsedPort}\n`);
+    process.stdout.write(`Open dashboard URL: ${server.url}\n`);
+    process.stdout.write("Press Ctrl+C to stop.\n");
   });
 
 program

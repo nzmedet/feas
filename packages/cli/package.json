@@ -13,6 +13,7 @@
     "lint": "echo \"No lints configured for @feas/cli yet\""
   },
   "dependencies": {
+    "@feas/api": "workspace:*",
     "@feas/core": "workspace:*",
     "commander": "^14.0.0"
   },

@@ -23,6 +23,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@feas/api':
+        specifier: workspace:*
+        version: link:../api
       '@feas/core':
         specifier: workspace:*
         version: link:../core
