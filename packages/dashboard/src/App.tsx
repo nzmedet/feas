@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-type View = "overview" | "builds" | "releases" | "doctor" | "logs";
+type View = "overview" | "builds" | "releases" | "submissions" | "doctor" | "metadata" | "credentials" | "logs";
 
 type Project = {
   id: string;
@@ -27,6 +27,15 @@ type ReleaseRow = {
   errorMessage?: string | null;
 };
 
+type SubmissionRow = {
+  id: string;
+  platform: string;
+  status: string;
+  store: string;
+  startedAt: string;
+  errorMessage?: string | null;
+};
+
 type DoctorRow = {
   id: string;
   category: string;
@@ -41,6 +50,13 @@ type LogRow = {
   path: string;
   createdAt: string;
 };
+
+type CredentialsPayload = {
+  ios: { configured: boolean; missing: string[] };
+  android: { configured: boolean; missing: string[] };
+};
+
+type MetadataPayload = Record<string, { path: string; content: string }>;
 
 function tokenFromUrl(): string {
   const url = new URL(window.location.href);
@@ -71,8 +87,11 @@ export function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [builds, setBuilds] = useState<BuildRow[]>([]);
   const [releases, setReleases] = useState<ReleaseRow[]>([]);
+  const [submissions, setSubmissions] = useState<SubmissionRow[]>([]);
   const [doctor, setDoctor] = useState<DoctorRow[]>([]);
   const [logs, setLogs] = useState<LogRow[]>([]);
+  const [metadata, setMetadata] = useState<MetadataPayload>({});
+  const [credentials, setCredentials] = useState<CredentialsPayload | null>(null);
   const [latestLogContent, setLatestLogContent] = useState<string>("No log selected.");
 
   const token = useMemo(() => tokenFromUrl(), []);
@@ -92,19 +111,26 @@ export function App() {
             setProject(null);
             setBuilds([]);
             setReleases([]);
+            setSubmissions([]);
             setDoctor([]);
             setLogs([]);
+            setMetadata({});
+            setCredentials(null);
             setLatestLogContent("No initialized FEAS projects found.");
           }
           return;
         }
 
-        const [buildsPayload, releasesPayload, doctorPayload, logsPayload] = await Promise.all([
-          apiGet<{ builds: BuildRow[] }>(`/api/projects/${current.id}/builds`, token),
-          apiGet<{ releases: ReleaseRow[] }>(`/api/projects/${current.id}/releases`, token),
-          apiGet<{ checks: DoctorRow[] }>(`/api/projects/${current.id}/doctor`, token),
-          apiGet<{ logs: LogRow[] }>(`/api/projects/${current.id}/logs`, token),
-        ]);
+        const [buildsPayload, releasesPayload, submissionsPayload, doctorPayload, logsPayload, metadataPayload, credentialsPayload] =
+          await Promise.all([
+            apiGet<{ builds: BuildRow[] }>(`/api/projects/${current.id}/builds`, token),
+            apiGet<{ releases: ReleaseRow[] }>(`/api/projects/${current.id}/releases`, token),
+            apiGet<{ submissions: SubmissionRow[] }>(`/api/projects/${current.id}/submissions`, token),
+            apiGet<{ checks: DoctorRow[] }>(`/api/projects/${current.id}/doctor`, token),
+            apiGet<{ logs: LogRow[] }>(`/api/projects/${current.id}/logs`, token),
+            apiGet<{ metadata: MetadataPayload }>(`/api/projects/${current.id}/metadata`, token),
+            apiGet<CredentialsPayload & { project: unknown }>(`/api/projects/${current.id}/credentials`, token),
+          ]);
 
         let logContent = "No logs found.";
         if (logsPayload.logs[0]) {
@@ -116,8 +142,14 @@ export function App() {
           setProject(current);
           setBuilds(buildsPayload.builds ?? []);
           setReleases(releasesPayload.releases ?? []);
+          setSubmissions(submissionsPayload.submissions ?? []);
           setDoctor(doctorPayload.checks ?? []);
           setLogs(logsPayload.logs ?? []);
+          setMetadata(metadataPayload.metadata ?? {});
+          setCredentials({
+            ios: credentialsPayload.ios,
+            android: credentialsPayload.android,
+          });
           setLatestLogContent(logContent);
         }
       } catch (err) {
@@ -149,7 +181,10 @@ export function App() {
             ["overview", "Overview"],
             ["builds", "Builds"],
             ["releases", "Releases"],
+            ["submissions", "Submissions"],
             ["doctor", "Doctor"],
+            ["metadata", "Metadata"],
+            ["credentials", "Credentials"],
             ["logs", "Logs"],
           ] as const).map(([key, label]) => (
             <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>
@@ -239,6 +274,26 @@ export function App() {
           </div>
         )}
 
+        {!loading && !error && view === "submissions" && (
+          <div className="panel">
+            <h3>Submissions</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Store</th><th>Error</th></tr></thead>
+              <tbody>
+                {submissions.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.id}</td>
+                    <td>{row.platform}</td>
+                    <td className={statusClass(row.status)}>{row.status}</td>
+                    <td>{row.store}</td>
+                    <td>{row.errorMessage ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {!loading && !error && view === "doctor" && (
           <div className="panel">
             <h3>Doctor Checks</h3>
@@ -253,6 +308,48 @@ export function App() {
                     <td>{row.message ?? ""}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && !error && view === "metadata" && (
+          <div className="panel">
+            <h3>Metadata</h3>
+            <table>
+              <thead><tr><th>File</th><th>Preview</th></tr></thead>
+              <tbody>
+                {Object.entries(metadata).map(([key, value]) => (
+                  <tr key={key}>
+                    <td>{key}</td>
+                    <td>{value.content.slice(0, 120)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && !error && view === "credentials" && (
+          <div className="panel">
+            <h3>Credentials</h3>
+            <table>
+              <thead><tr><th>Platform</th><th>Status</th><th>Missing</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>iOS</td>
+                  <td className={credentials?.ios.configured ? "status-ok" : "status-bad"}>
+                    {credentials?.ios.configured ? "configured" : "missing"}
+                  </td>
+                  <td>{credentials?.ios.missing.join(", ") ?? ""}</td>
+                </tr>
+                <tr>
+                  <td>Android</td>
+                  <td className={credentials?.android.configured ? "status-ok" : "status-bad"}>
+                    {credentials?.android.configured ? "configured" : "missing"}
+                  </td>
+                  <td>{credentials?.android.missing.join(", ") ?? ""}</td>
+                </tr>
               </tbody>
             </table>
           </div>
