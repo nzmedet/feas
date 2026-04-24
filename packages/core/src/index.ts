@@ -10,7 +10,7 @@ import {
   createSubmissionRecord,
   ensureProjectDatabase,
   recordDoctorChecks,
-} from "@feas/db";
+} from "feas-db";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -208,11 +208,20 @@ export interface ConfigureIosCredentialsOptions {
   keyId?: string;
   issuerId?: string;
   privateKeyPath?: string;
+  saveAs?: string;
+  use?: string;
 }
 
 export interface ConfigureAndroidCredentialsOptions {
   cwd: string;
   serviceAccountPath?: string;
+  saveAs?: string;
+  use?: string;
+}
+
+export interface CredentialProfileSummary {
+  ios: string[];
+  android: string[];
 }
 
 export type DoctorPlatform = "all" | "ios" | "android";
@@ -597,6 +606,30 @@ function getSecretStore(): SecretStore {
 
 function credentialsKey(projectId: string, platform: "ios" | "android", name: string): string {
   return `projects.${projectId}.${platform}.${name}`;
+}
+
+function credentialProfileKey(platform: "ios" | "android", profileName: string, name: string): string {
+  return `accounts.${platform}.${profileName}.${name}`;
+}
+
+function assertCredentialProfileName(profileName: string): void {
+  if (!/^[a-zA-Z0-9._-]+$/.test(profileName)) {
+    throw new Error("Credential profile names may only contain letters, numbers, dots, underscores, and hyphens.");
+  }
+}
+
+async function assertReadableFile(filePath: string, label: string): Promise<void> {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error(`${label} is not a file: ${filePath}`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("is not a file")) {
+      throw error;
+    }
+    throw new Error(`${label} was not found or is not readable: ${filePath}`);
+  }
 }
 
 function resolveProjectStoragePaths(detection: FeasProjectInfo): {
@@ -2422,14 +2455,36 @@ export async function configureIosCredentials(options: ConfigureIosCredentialsOp
     throw new Error("Project is not initialized. Run `feas init` before credentials setup.");
   }
 
-  if (!options.keyId || !options.issuerId || !options.privateKeyPath) {
-    throw new Error("Missing required iOS credentials. Provide --key-id, --issuer-id, and --private-key-path.");
+  const store = getSecretStore();
+  let keyId = options.keyId;
+  let issuerId = options.issuerId;
+  let privateKeyPath = options.privateKeyPath ? path.resolve(options.cwd, options.privateKeyPath) : undefined;
+
+  if (options.use) {
+    assertCredentialProfileName(options.use);
+    keyId = await store.get(credentialProfileKey("ios", options.use, "key_id")) ?? undefined;
+    issuerId = await store.get(credentialProfileKey("ios", options.use, "issuer_id")) ?? undefined;
+    privateKeyPath = await store.get(credentialProfileKey("ios", options.use, "private_key_path")) ?? undefined;
+    if (!keyId || !issuerId || !privateKeyPath) {
+      throw new Error(`Saved iOS credential profile '${options.use}' is incomplete or missing.`);
+    }
   }
 
-  const store = getSecretStore();
-  await store.set(credentialsKey(projectId, "ios", "key_id"), options.keyId);
-  await store.set(credentialsKey(projectId, "ios", "issuer_id"), options.issuerId);
-  await store.set(credentialsKey(projectId, "ios", "private_key_path"), path.resolve(options.cwd, options.privateKeyPath));
+  if (!keyId || !issuerId || !privateKeyPath) {
+    throw new Error("Missing required iOS credentials. Provide --key-id, --issuer-id, and --private-key-path, or use --use <profile>.");
+  }
+
+  await assertReadableFile(privateKeyPath, "App Store Connect private key");
+  await store.set(credentialsKey(projectId, "ios", "key_id"), keyId);
+  await store.set(credentialsKey(projectId, "ios", "issuer_id"), issuerId);
+  await store.set(credentialsKey(projectId, "ios", "private_key_path"), privateKeyPath);
+
+  if (options.saveAs) {
+    assertCredentialProfileName(options.saveAs);
+    await store.set(credentialProfileKey("ios", options.saveAs, "key_id"), keyId);
+    await store.set(credentialProfileKey("ios", options.saveAs, "issuer_id"), issuerId);
+    await store.set(credentialProfileKey("ios", options.saveAs, "private_key_path"), privateKeyPath);
+  }
 
   return { project: detection };
 }
@@ -2441,17 +2496,55 @@ export async function configureAndroidCredentials(options: ConfigureAndroidCrede
     throw new Error("Project is not initialized. Run `feas init` before credentials setup.");
   }
 
-  if (!options.serviceAccountPath) {
-    throw new Error("Missing required Android credentials. Provide --service-account-path.");
+  const store = getSecretStore();
+  let serviceAccountPath = options.serviceAccountPath ? path.resolve(options.cwd, options.serviceAccountPath) : undefined;
+
+  if (options.use) {
+    assertCredentialProfileName(options.use);
+    serviceAccountPath = await store.get(credentialProfileKey("android", options.use, "service_account_path")) ?? undefined;
+    if (!serviceAccountPath) {
+      throw new Error(`Saved Android credential profile '${options.use}' is incomplete or missing.`);
+    }
   }
 
-  const store = getSecretStore();
+  if (!serviceAccountPath) {
+    throw new Error("Missing required Android credentials. Provide --service-account-path, or use --use <profile>.");
+  }
+
+  await assertReadableFile(serviceAccountPath, "Google Play service account JSON");
   await store.set(
     credentialsKey(projectId, "android", "service_account_path"),
-    path.resolve(options.cwd, options.serviceAccountPath),
+    serviceAccountPath,
   );
 
+  if (options.saveAs) {
+    assertCredentialProfileName(options.saveAs);
+    await store.set(credentialProfileKey("android", options.saveAs, "service_account_path"), serviceAccountPath);
+  }
+
   return { project: detection };
+}
+
+export async function listCredentialProfiles(): Promise<CredentialProfileSummary> {
+  const store = getSecretStore();
+  const keys = await store.list("accounts.");
+  const result: CredentialProfileSummary = { ios: [], android: [] };
+
+  for (const key of keys) {
+    const match = key.match(/^accounts\.(ios|android)\.([a-zA-Z0-9._-]+)\./);
+    if (!match) {
+      continue;
+    }
+    const platform = match[1] as "ios" | "android";
+    const profileName = match[2];
+    if (!result[platform].includes(profileName)) {
+      result[platform].push(profileName);
+    }
+  }
+
+  result.ios.sort();
+  result.android.sort();
+  return result;
 }
 
 export async function validateCredentials(options: { cwd: string }): Promise<CredentialsValidationResult> {

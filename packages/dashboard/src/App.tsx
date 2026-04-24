@@ -170,6 +170,7 @@ export function App() {
   const [latestLogContent, setLatestLogContent] = useState<string>("No log selected.");
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionMessageKind, setActionMessageKind] = useState<"running" | "success" | "error">("success");
 
   const token = useMemo(() => tokenFromUrl(), []);
   const metadataKeys = useMemo(() => Object.keys(metadata).sort(), [metadata]);
@@ -257,12 +258,15 @@ export function App() {
   const runAction = useCallback(
     async (label: string, action: () => Promise<void>) => {
       setActionBusy(label);
-      setActionMessage(null);
+      setActionMessageKind("running");
+      setActionMessage(`${label} running...`);
       try {
         await action();
         await load();
+        setActionMessageKind("success");
         setActionMessage(`${label} completed.`);
       } catch (err) {
+        setActionMessageKind("error");
         setActionMessage(`${label} failed: ${toErrorMessage(err)}`);
       } finally {
         setActionBusy(null);
@@ -505,7 +509,7 @@ export function App() {
                 {actionBusy === "Release" ? "Running release..." : "Run Release"}
               </button>
             </div>
-            {actionMessage && <div className="notice">{actionMessage}</div>}
+            {actionMessage && <div className={`notice notice-${actionMessageKind}`}>{actionMessage}</div>}
           </div>
         )}
 
@@ -531,6 +535,7 @@ export function App() {
                 {actionBusy === "Initialize project" ? "Initializing..." : "Initialize"}
               </button>
             </div>
+            {actionMessage && <div className={`notice notice-${actionMessageKind}`}>{actionMessage}</div>}
             <div className="notice">
               FEAS will inspect the project only. It will not regenerate iOS/Android folders unless you explicitly enable prebuild for a build or release.
             </div>

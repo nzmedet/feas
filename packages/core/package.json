@@ -1,16 +1,21 @@
 {
-  "name": "@feas/core",
+  "name": "feas-core",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "dist/index.js",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"No lints configured for @feas/core yet\""
+    "lint": "echo \"No lints configured for feas-core yet\""
   },
   "dependencies": {
-    "@feas/db": "workspace:*"
-  }
+    "feas-db": "workspace:^"
+  },
+  "files": [
+    "dist",
+    "src",
+    "package.json"
+  ]
 }

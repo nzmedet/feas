@@ -27,9 +27,10 @@ Last updated: 2026-04-24
 - [x] Release stops with an actionable message when the requested `eas.json` build profile is missing
 - [x] `feas logs`
 - [x] `feas metadata` (`pull/push/validate/open`)
-- [x] `feas credentials` (`ios/android/validate`)
+- [x] `feas credentials` (`ios/android/list/validate`, interactive prompts, reusable local profiles)
 - [x] `feas clean`
 - [x] `feas open`
+- [x] npm packaging metadata for `feas` and workspace packages
 
 ### Persistence / Data
 - [x] Prisma schema for projects/builds/submissions/releases/doctor checks
@@ -55,6 +56,7 @@ Last updated: 2026-04-24
 - [x] Initialize project by mobile project path
 - [x] Quick actions: run doctor/build/submit/release
 - [x] Explicit Expo prebuild opt-in control
+- [x] Dashboard action feedback distinguishes running/success/error states
 - [x] Metadata editor + metadata pull/push/validate actions
 - [x] Credentials forms (iOS + Android)
 - [x] EAS-inspired layout and interaction structure (not a clone)
@@ -68,15 +70,16 @@ Last updated: 2026-04-24
 - [x] GitHub Actions CI added (`typecheck` + `build` + test suite)
 - [x] API integration test added (`node:test` against running local API server)
 - [x] Regression coverage for metadata path traversal, encrypted credential storage, EAS env propagation, release dry-run version bumping, app.config-only detection, and missing release profiles
+- [x] npm pack verification for publishable package contents
 
 ## In Progress / Next
 - [ ] Real App Store / Play metadata pull/push requires validation against credentialed store apps
 - [ ] macOS Keychain backend for secrets (encrypted local file is the current default)
 - [ ] Version bumping for complex dynamic `app.config.ts` logic and Xcode project build settings beyond `Info.plist`
-- [ ] Expand automated tests (unit + dashboard smoke)
-- [ ] Improve dashboard action feedback (streaming/progress states)
+- [ ] Expand automated tests (unit + dashboard browser smoke)
+- [ ] Streaming dashboard progress for long-running real builds
 - [ ] Add richer release history drill-down and links between run artifacts
-- [ ] Harden credential UX (validation hints + safer path checks)
+- [ ] Dashboard selector for reusable credential profiles
 - [ ] Expand metadata locale handling beyond current defaults
 
 ## Notes

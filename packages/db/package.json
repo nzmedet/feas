@@ -1,14 +1,14 @@
 {
-  "name": "@feas/db",
+  "name": "feas-db",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "dist/index.js",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"No lints configured for @feas/db yet\"",
+    "lint": "echo \"No lints configured for feas-db yet\"",
     "db:generate": "prisma generate --schema ./prisma/schema.prisma"
   },
   "dependencies": {
@@ -16,5 +16,11 @@
   },
   "devDependencies": {
     "prisma": "^6.19.3"
-  }
+  },
+  "files": [
+    "dist",
+    "src",
+    "prisma",
+    "package.json"
+  ]
 }

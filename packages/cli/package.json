@@ -1,7 +1,7 @@
 {
-  "name": "@feas/cli",
+  "name": "feas-cli",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "bin": {
     "feas": "dist/index.js"
@@ -10,14 +10,21 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts --help",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"No lints configured for @feas/cli yet\""
+    "lint": "echo \"No lints configured for feas-cli yet\""
   },
   "dependencies": {
-    "@feas/api": "workspace:*",
-    "@feas/core": "workspace:*",
+    "feas-api": "workspace:^",
+    "feas-core": "workspace:^",
+    "feas-dashboard": "workspace:^",
     "commander": "^14.0.0"
   },
   "devDependencies": {
     "tsx": "^4.19.3"
-  }
+  },
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts"
 }

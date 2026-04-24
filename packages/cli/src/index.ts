@@ -2,13 +2,15 @@
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { startLocalApiServer } from "@feas/api";
+import { startLocalApiServer } from "feas-api";
 import {
   cleanProject,
   configureAndroidCredentials,
   configureIosCredentials,
   initFeasProject,
+  listCredentialProfiles,
   listLogs,
   resolveFeasConfig,
   runBuild,
@@ -19,10 +21,30 @@ import {
   runRelease,
   runSubmit,
   validateCredentials,
-} from "@feas/core";
+} from "feas-core";
 import { Command } from "commander";
 
 const program = new Command();
+
+async function promptRequired(label: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`Missing ${label}. Provide it with a flag when running non-interactively.`);
+  }
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const value = (await rl.question(`${label}: `)).trim();
+    if (!value) {
+      throw new Error(`${label} is required.`);
+    }
+    return value;
+  } finally {
+    rl.close();
+  }
+}
 
 program
   .name("feas")
@@ -414,28 +436,58 @@ const credentials = program.command("credentials").description("Configure and va
 
 credentials
   .command("ios")
-  .requiredOption("--key-id <keyId>", "App Store Connect API key id")
-  .requiredOption("--issuer-id <issuerId>", "App Store Connect issuer id")
-  .requiredOption("--private-key-path <path>", "Path to .p8 private key file")
+  .option("--key-id <keyId>", "App Store Connect API key id")
+  .option("--issuer-id <issuerId>", "App Store Connect issuer id")
+  .option("--private-key-path <path>", "Path to .p8 private key file")
+  .option("--save-as <name>", "Save these credentials as a reusable local profile")
+  .option("--use <name>", "Attach a saved reusable iOS credential profile to this project")
   .action(async (options) => {
+    const keyId = options.use ? options.keyId : options.keyId ?? await promptRequired("App Store Connect API Key ID");
+    const issuerId = options.use ? options.issuerId : options.issuerId ?? await promptRequired("App Store Connect Issuer ID");
+    const privateKeyPath = options.use ? options.privateKeyPath : options.privateKeyPath ?? await promptRequired("Path to App Store Connect .p8 key");
     await configureIosCredentials({
       cwd: process.cwd(),
-      keyId: options.keyId,
-      issuerId: options.issuerId,
-      privateKeyPath: options.privateKeyPath,
+      keyId,
+      issuerId,
+      privateKeyPath,
+      saveAs: options.saveAs,
+      use: options.use,
     });
-    process.stdout.write("iOS credentials saved.\n");
+    process.stdout.write(`iOS credentials ${options.use ? `attached from '${options.use}'` : "saved"}.\n`);
+    if (options.saveAs) {
+      process.stdout.write(`Reusable iOS profile saved as '${options.saveAs}'.\n`);
+    }
   });
 
 credentials
   .command("android")
-  .requiredOption("--service-account-path <path>", "Path to Google Play service account JSON")
+  .option("--service-account-path <path>", "Path to Google Play service account JSON")
+  .option("--save-as <name>", "Save these credentials as a reusable local profile")
+  .option("--use <name>", "Attach a saved reusable Android credential profile to this project")
   .action(async (options) => {
+    const serviceAccountPath = options.use
+      ? options.serviceAccountPath
+      : options.serviceAccountPath ?? await promptRequired("Path to Google Play service account JSON");
     await configureAndroidCredentials({
       cwd: process.cwd(),
-      serviceAccountPath: options.serviceAccountPath,
+      serviceAccountPath,
+      saveAs: options.saveAs,
+      use: options.use,
     });
-    process.stdout.write("Android credentials saved.\n");
+    process.stdout.write(`Android credentials ${options.use ? `attached from '${options.use}'` : "saved"}.\n`);
+    if (options.saveAs) {
+      process.stdout.write(`Reusable Android profile saved as '${options.saveAs}'.\n`);
+    }
+  });
+
+credentials
+  .command("list")
+  .description("List reusable local credential profiles")
+  .action(async () => {
+    const profiles = await listCredentialProfiles();
+    process.stdout.write("Reusable credential profiles\n");
+    process.stdout.write(`  iOS: ${profiles.ios.length ? profiles.ios.join(", ") : "none"}\n`);
+    process.stdout.write(`  Android: ${profiles.android.length ? profiles.android.join(", ") : "none"}\n`);
   });
 
 credentials

@@ -14,7 +14,7 @@ import {
   runMetadataPush,
   runMetadataValidate,
   validateCredentials,
-} from "@feas/core";
+} from "feas-core";
 import {
   getBuildById,
   getProjectBuilds,
@@ -22,7 +22,7 @@ import {
   getProjectReleases,
   getProjectSubmissions,
   getReleaseById,
-} from "@feas/db";
+} from "feas-db";
 
 export interface StartLocalApiServerOptions {
   port: number;

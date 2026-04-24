@@ -1,18 +1,22 @@
 {
-  "name": "@feas/api",
+  "name": "feas-api",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"No lints configured for @feas/api yet\""
+    "lint": "echo \"No lints configured for feas-api yet\""
   },
   "dependencies": {
-    "@feas/core": "workspace:*",
-    "@feas/db": "workspace:*",
+    "feas-core": "workspace:^",
+    "feas-db": "workspace:^",
     "fastify": "^5.2.1"
-  }
+  },
+  "files": [
+    "dist",
+    "package.json"
+  ]
 }

@@ -30,6 +30,12 @@ For real (non-dry-run) native/release actions you also need:
 pnpm install
 ```
 
+After npm publishing:
+```bash
+npm install -g feas
+feas --help
+```
+
 ## Build + Validate
 ```bash
 pnpm typecheck
@@ -85,9 +91,16 @@ node packages/cli/dist/index.js metadata pull ios --real
 node packages/cli/dist/index.js metadata push ios --real
 
 # credentials
-node packages/cli/dist/index.js credentials ios --key-id <KEY_ID> --issuer-id <ISSUER_ID> --private-key-path <PATH_TO_P8>
-node packages/cli/dist/index.js credentials android --service-account-path <PATH_TO_JSON>
+node packages/cli/dist/index.js credentials ios
+node packages/cli/dist/index.js credentials android
 node packages/cli/dist/index.js credentials validate
+
+# reusable local credential profiles
+node packages/cli/dist/index.js credentials ios --key-id <KEY_ID> --issuer-id <ISSUER_ID> --private-key-path <PATH_TO_P8> --save-as personal-apple
+node packages/cli/dist/index.js credentials android --service-account-path <PATH_TO_JSON> --save-as personal-google
+node packages/cli/dist/index.js credentials list
+node packages/cli/dist/index.js credentials ios --use personal-apple
+node packages/cli/dist/index.js credentials android --use personal-google
 
 # logs and cleanup
 node packages/cli/dist/index.js logs --latest --raw
@@ -133,3 +146,20 @@ pnpm test
 - FEAS does not run Expo prebuild automatically. Use `--prebuild` or the dashboard checkbox only when regenerating native folders is acceptable.
 - Real store submission and native build behavior depends on your local machine/toolchain and credential correctness.
 - Metadata reading currently focuses on locale path `en-NZ`.
+- Dynamic `app.config.ts` files are only partially parsed. If values are computed, verify `feas config --json` before real release.
+
+## Publishing
+The npm package is split into `feas` plus internal public packages. Publish with the same version in dependency order:
+
+```bash
+pnpm typecheck
+pnpm build
+pnpm test
+
+cd packages/db && pnpm publish --tag beta
+cd ../dashboard && pnpm publish --tag beta
+cd ../core && pnpm publish --tag beta
+cd ../api && pnpm publish --tag beta
+cd ../cli && pnpm publish --tag beta
+cd ../.. && pnpm publish --tag beta
+```

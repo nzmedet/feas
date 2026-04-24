@@ -240,6 +240,23 @@ button:disabled {
   font-size: 13px;
 }
 
+.notice-running {
+  border-color: #5f86c7;
+  background: #102542;
+}
+
+.notice-success {
+  border-color: rgba(59, 211, 139, 0.45);
+  color: #c9ffe4;
+  background: rgba(24, 84, 55, 0.32);
+}
+
+.notice-error {
+  border-color: rgba(255, 96, 122, 0.5);
+  color: #ffd3da;
+  background: rgba(98, 31, 45, 0.34);
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(160px, 1fr));

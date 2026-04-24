@@ -145,10 +145,24 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
     assert.equal(metadataFiles.length > 0, true);
 
     const credentialsResult = runFeas(
-      ["credentials", "ios", "--key-id", "KEY123", "--issuer-id", "ISSUER123", "--private-key-path", "AuthKey_TEST.p8"],
+      [
+        "credentials",
+        "ios",
+        "--key-id",
+        "KEY123",
+        "--issuer-id",
+        "ISSUER123",
+        "--private-key-path",
+        "AuthKey_TEST.p8",
+        "--save-as",
+        "personal-ios",
+      ],
       { cwd: appDir, feasHome },
     );
     assert.equal(credentialsResult.status, 0, `credentials failed: ${credentialsResult.stderr}`);
+    const credentialListResult = runFeas(["credentials", "list"], { cwd: appDir, feasHome });
+    assert.equal(credentialListResult.status, 0, `credentials list failed: ${credentialListResult.stderr}`);
+    assert.match(credentialListResult.stdout, /personal-ios/);
     const encryptedSecrets = await readFile(path.join(feasHome, "secrets.enc.json"), "utf8");
     assert.match(encryptedSecrets, /"version": 1/);
     assert.doesNotMatch(encryptedSecrets, /KEY123|ISSUER123|AuthKey_TEST/);
@@ -259,6 +273,7 @@ test("cli smoke: app.config-only hybrid detection and missing release profile", 
 `,
       "utf8",
     );
+    await writeFile(path.join(appDir, "AuthKey_CONFIG_ONLY.p8"), "fake-p8", "utf8");
 
     const initResult = runFeas(["init"], { cwd: appDir, feasHome });
     assert.equal(initResult.status, 0, `init failed: ${initResult.stderr}`);
@@ -273,6 +288,26 @@ test("cli smoke: app.config-only hybrid detection and missing release profile", 
     assert.equal(config.project.configSources.length, 1);
     assert.equal(config.project.bundleIdentifiers.ios, "com.example.configonly");
     assert.equal(config.project.bundleIdentifiers.android, "com.example.configonly");
+
+    const saveProfileResult = runFeas(
+      [
+        "credentials",
+        "ios",
+        "--key-id",
+        "CONFIGKEY",
+        "--issuer-id",
+        "CONFIGISSUER",
+        "--private-key-path",
+        "AuthKey_CONFIG_ONLY.p8",
+        "--save-as",
+        "shared-apple",
+      ],
+      { cwd: appDir, feasHome },
+    );
+    assert.equal(saveProfileResult.status, 0, `save profile failed: ${saveProfileResult.stderr}`);
+
+    const attachProfileResult = runFeas(["credentials", "ios", "--use", "shared-apple"], { cwd: appDir, feasHome });
+    assert.equal(attachProfileResult.status, 0, `attach profile failed: ${attachProfileResult.stderr}`);
 
     const missingProfileResult = runFeas(["release", "ios", "--profile", "staging", "--dry-run", "--skip-submit", "--json"], {
       cwd: appDir,

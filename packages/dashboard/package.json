@@ -1,13 +1,13 @@
 {
-  "name": "@feas/dashboard",
+  "name": "feas-dashboard",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "scripts": {
     "build": "vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "lint": "echo \"No lints configured for @feas/dashboard yet\""
+    "lint": "echo \"No lints configured for feas-dashboard yet\""
   },
   "dependencies": {
     "react": "^19.1.0",
@@ -18,5 +18,10 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^5.0.2",
     "vite": "^7.1.10"
-  }
+  },
+  "main": "dist/index.html",
+  "files": [
+    "dist",
+    "package.json"
+  ]
 }
