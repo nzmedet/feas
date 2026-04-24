@@ -67,10 +67,14 @@ program
     const project = config.project as Record<string, unknown>;
     const platforms = project.platforms as Record<string, boolean>;
     const profile = config.profile as string;
+    const projectId = config.projectId as string;
+    const paths = config.paths as Record<string, string>;
 
     process.stdout.write(`Project: ${project.displayName}\n`);
+    process.stdout.write(`Project ID: ${projectId}\n`);
     process.stdout.write(`Root: ${project.rootPath}\n`);
     process.stdout.write(`Profile: ${profile}\n`);
+    process.stdout.write(`State Path: ${paths.projectPath}\n`);
     process.stdout.write(`Platform iOS: ${platforms.ios ? "yes" : "no"}\n`);
     process.stdout.write(`Platform Android: ${platforms.android ? "yes" : "no"}\n`);
   });

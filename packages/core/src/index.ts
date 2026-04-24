@@ -1040,13 +1040,18 @@ export async function initFeasProject(options: InitFeasProjectOptions): Promise<
 export async function resolveFeasConfig(options: { cwd: string; profile?: string }): Promise<Record<string, unknown>> {
   const profile = options.profile ?? "production";
   const { detection, easConfig } = await detectProject(options.cwd);
+  const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
 
   const selectedBuildProfile = easConfig.build?.[profile] ?? null;
   const selectedSubmitProfile = easConfig.submit?.[profile] ?? null;
+  const internalConfig = (await fileExists(internalConfigPath))
+    ? await readJsonFile<Record<string, unknown>>(internalConfigPath)
+    : null;
 
   return {
     schemaVersion: 1,
     profile,
+    projectId,
     project: {
       rootPath: detection.rootPath,
       packageName: detection.packageName,
@@ -1061,6 +1066,15 @@ export async function resolveFeasConfig(options: { cwd: string; profile?: string
       build: selectedBuildProfile,
       submit: selectedSubmitProfile,
     },
+    paths: {
+      projectPath,
+      databasePath,
+      internalConfigPath,
+      metadataPath: path.join(projectPath, "metadata"),
+      artifactsPath: path.join(projectPath, "artifacts"),
+      logsPath: path.join(projectPath, "logs"),
+    },
+    internal: internalConfig,
     feas: {
       homePath: getFeasHomeDir(),
       version: getFeasVersion(),
