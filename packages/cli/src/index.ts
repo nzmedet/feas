@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { startLocalApiServer } from "@feas/api";
 import {
+  configureAndroidCredentials,
+  configureIosCredentials,
   initFeasProject,
   listLogs,
   resolveFeasConfig,
@@ -13,6 +15,7 @@ import {
   runMetadataValidate,
   runRelease,
   runSubmit,
+  validateCredentials,
 } from "@feas/core";
 import { Command } from "commander";
 
@@ -353,6 +356,60 @@ metadata
       platform: platformArg,
     });
     process.stdout.write(`Metadata directory: ${result.metadataRoot}\n`);
+  });
+
+const credentials = program.command("credentials").description("Configure and validate credentials");
+
+credentials
+  .command("ios")
+  .requiredOption("--key-id <keyId>", "App Store Connect API key id")
+  .requiredOption("--issuer-id <issuerId>", "App Store Connect issuer id")
+  .requiredOption("--private-key-path <path>", "Path to .p8 private key file")
+  .action(async (options) => {
+    await configureIosCredentials({
+      cwd: process.cwd(),
+      keyId: options.keyId,
+      issuerId: options.issuerId,
+      privateKeyPath: options.privateKeyPath,
+    });
+    process.stdout.write("iOS credentials saved.\n");
+  });
+
+credentials
+  .command("android")
+  .requiredOption("--service-account-path <path>", "Path to Google Play service account JSON")
+  .action(async (options) => {
+    await configureAndroidCredentials({
+      cwd: process.cwd(),
+      serviceAccountPath: options.serviceAccountPath,
+    });
+    process.stdout.write("Android credentials saved.\n");
+  });
+
+credentials
+  .command("validate")
+  .action(async () => {
+    const result = await validateCredentials({
+      cwd: process.cwd(),
+    });
+
+    process.stdout.write(`Credentials for ${result.project.displayName}\n`);
+    process.stdout.write(`  iOS: ${result.ios.configured ? "configured" : "missing"}\n`);
+    if (!result.ios.configured) {
+      for (const key of result.ios.missing) {
+        process.stdout.write(`    missing: ${key}\n`);
+      }
+    }
+    process.stdout.write(`  Android: ${result.android.configured ? "configured" : "missing"}\n`);
+    if (!result.android.configured) {
+      for (const key of result.android.missing) {
+        process.stdout.write(`    missing: ${key}\n`);
+      }
+    }
+
+    if (!result.ios.configured || !result.android.configured) {
+      process.exitCode = 1;
+    }
   });
 
 program

@@ -163,6 +163,37 @@ export interface MetadataValidationResult extends MetadataOperationResult {
   missingFiles: string[];
 }
 
+export interface SecretStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(prefix?: string): Promise<string[]>;
+}
+
+export interface CredentialsValidationResult {
+  project: FeasProjectInfo;
+  ios: {
+    configured: boolean;
+    missing: string[];
+  };
+  android: {
+    configured: boolean;
+    missing: string[];
+  };
+}
+
+export interface ConfigureIosCredentialsOptions {
+  cwd: string;
+  keyId?: string;
+  issuerId?: string;
+  privateKeyPath?: string;
+}
+
+export interface ConfigureAndroidCredentialsOptions {
+  cwd: string;
+  serviceAccountPath?: string;
+}
+
 export type DoctorPlatform = "all" | "ios" | "android";
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -300,6 +331,57 @@ function getFeasHomeDir(): string {
   return path.join(os.homedir(), ".feas");
 }
 
+class JsonFileSecretStore implements SecretStore {
+  private readonly filePath: string;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  private async readAll(): Promise<Record<string, string>> {
+    if (!(await fileExists(this.filePath))) {
+      return {};
+    }
+
+    const raw = await fs.readFile(this.filePath, "utf8");
+    return JSON.parse(raw) as Record<string, string>;
+  }
+
+  private async writeAll(secrets: Record<string, string>): Promise<void> {
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.writeFile(this.filePath, `${JSON.stringify(secrets, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  }
+
+  async get(key: string): Promise<string | null> {
+    const data = await this.readAll();
+    return data[key] ?? null;
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    const data = await this.readAll();
+    data[key] = value;
+    await this.writeAll(data);
+  }
+
+  async delete(key: string): Promise<void> {
+    const data = await this.readAll();
+    if (!(key in data)) {
+      return;
+    }
+    delete data[key];
+    await this.writeAll(data);
+  }
+
+  async list(prefix?: string): Promise<string[]> {
+    const data = await this.readAll();
+    const keys = Object.keys(data);
+    if (!prefix) {
+      return keys.sort();
+    }
+    return keys.filter((key) => key.startsWith(prefix)).sort();
+  }
+}
+
 async function fileExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -362,6 +444,14 @@ function resolveProjectIdentity(detection: FeasProjectInfo): { projectId: string
   const projectId = createProjectId(detection.rootPath, detection.packageName, primaryBundleId);
 
   return { projectId, primaryBundleId };
+}
+
+function getSecretStore(): SecretStore {
+  return new JsonFileSecretStore(path.join(getFeasHomeDir(), "secrets.json"));
+}
+
+function credentialsKey(projectId: string, platform: "ios" | "android", name: string): string {
+  return `projects.${projectId}.${platform}.${name}`;
 }
 
 function resolveProjectStoragePaths(detection: FeasProjectInfo): {
@@ -1512,6 +1602,85 @@ export async function runMetadataPush(options: { cwd: string; platform: "ios" | 
     platform: validation.platform,
     metadataRoot: validation.metadataRoot,
     files: validation.files,
+  };
+}
+
+export async function configureIosCredentials(options: ConfigureIosCredentialsOptions): Promise<{ project: FeasProjectInfo }> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectId, internalConfigPath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before credentials setup.");
+  }
+
+  if (!options.keyId || !options.issuerId || !options.privateKeyPath) {
+    throw new Error("Missing required iOS credentials. Provide --key-id, --issuer-id, and --private-key-path.");
+  }
+
+  const store = getSecretStore();
+  await store.set(credentialsKey(projectId, "ios", "key_id"), options.keyId);
+  await store.set(credentialsKey(projectId, "ios", "issuer_id"), options.issuerId);
+  await store.set(credentialsKey(projectId, "ios", "private_key_path"), path.resolve(options.cwd, options.privateKeyPath));
+
+  return { project: detection };
+}
+
+export async function configureAndroidCredentials(options: ConfigureAndroidCredentialsOptions): Promise<{ project: FeasProjectInfo }> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectId, internalConfigPath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before credentials setup.");
+  }
+
+  if (!options.serviceAccountPath) {
+    throw new Error("Missing required Android credentials. Provide --service-account-path.");
+  }
+
+  const store = getSecretStore();
+  await store.set(
+    credentialsKey(projectId, "android", "service_account_path"),
+    path.resolve(options.cwd, options.serviceAccountPath),
+  );
+
+  return { project: detection };
+}
+
+export async function validateCredentials(options: { cwd: string }): Promise<CredentialsValidationResult> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectId, internalConfigPath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before credentials validation.");
+  }
+
+  const store = getSecretStore();
+  const iosRequired = ["key_id", "issuer_id", "private_key_path"];
+  const androidRequired = ["service_account_path"];
+
+  const iosMissing: string[] = [];
+  for (const key of iosRequired) {
+    const value = await store.get(credentialsKey(projectId, "ios", key));
+    if (!value || value.trim().length === 0) {
+      iosMissing.push(key);
+    }
+  }
+
+  const androidMissing: string[] = [];
+  for (const key of androidRequired) {
+    const value = await store.get(credentialsKey(projectId, "android", key));
+    if (!value || value.trim().length === 0) {
+      androidMissing.push(key);
+    }
+  }
+
+  return {
+    project: detection,
+    ios: {
+      configured: iosMissing.length === 0,
+      missing: iosMissing,
+    },
+    android: {
+      configured: androidMissing.length === 0,
+      missing: androidMissing,
+    },
   };
 }
 
