@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-import 'feas-cli';
+import '../dist/feas.js';

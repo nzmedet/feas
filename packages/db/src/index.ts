@@ -96,10 +96,24 @@ function createPrismaClient(databasePath: string): PrismaClient {
   });
 }
 
-function getMigrationBasePath(): string {
+async function getMigrationBasePath(): Promise<string> {
   const currentFilePath = fileURLToPath(import.meta.url);
   const packageRoot = path.resolve(path.dirname(currentFilePath), "..");
-  return path.join(packageRoot, "prisma", "migrations");
+  const candidates = [
+    path.join(packageRoot, "prisma", "migrations"),
+    path.join(packageRoot, "packages", "db", "prisma", "migrations"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // Try the next packaged layout.
+    }
+  }
+  return candidates[0];
 }
 
 function splitSqlStatements(sql: string): string[] {
@@ -111,7 +125,7 @@ function splitSqlStatements(sql: string): string[] {
 }
 
 async function applyMigrations(prisma: PrismaClient): Promise<void> {
-  const migrationBasePath = getMigrationBasePath();
+  const migrationBasePath = await getMigrationBasePath();
 
   for (const migrationPath of MIGRATION_PATHS) {
     const fullPath = path.join(migrationBasePath, migrationPath);

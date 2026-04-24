@@ -30,7 +30,7 @@ Last updated: 2026-04-24
 - [x] `feas credentials` (`ios/android/list/validate`, interactive prompts, reusable local profiles)
 - [x] `feas clean`
 - [x] `feas open`
-- [x] npm packaging metadata for `feas` and workspace packages
+- [x] single-package npm packaging for `feas`
 
 ### Persistence / Data
 - [x] Prisma schema for projects/builds/submissions/releases/doctor checks
@@ -70,7 +70,7 @@ Last updated: 2026-04-24
 - [x] GitHub Actions CI added (`typecheck` + `build` + test suite)
 - [x] API integration test added (`node:test` against running local API server)
 - [x] Regression coverage for metadata path traversal, encrypted credential storage, EAS env propagation, release dry-run version bumping, app.config-only detection, and missing release profiles
-- [x] npm pack verification for publishable package contents
+- [x] npm pack and fresh install verification for the single `feas` package
 
 ## In Progress / Next
 - [ ] Real App Store / Play metadata pull/push requires validation against credentialed store apps

@@ -149,17 +149,12 @@ pnpm test
 - Dynamic `app.config.ts` files are only partially parsed. If values are computed, verify `feas config --json` before real release.
 
 ## Publishing
-The npm package is split into `feas` plus internal public packages. Publish with the same version in dependency order:
+The npm artifact is a single public package, `feas`. Workspace packages stay private and are bundled into the root package:
 
 ```bash
 pnpm typecheck
 pnpm build
 pnpm test
 
-cd packages/db && pnpm publish --tag beta
-cd ../dashboard && pnpm publish --tag beta
-cd ../core && pnpm publish --tag beta
-cd ../api && pnpm publish --tag beta
-cd ../cli && pnpm publish --tag beta
-cd ../.. && pnpm publish --tag beta
+pnpm publish --tag beta
 ```

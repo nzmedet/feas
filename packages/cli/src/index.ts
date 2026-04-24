@@ -26,6 +26,35 @@ import { Command } from "commander";
 
 const program = new Command();
 
+async function directoryExists(targetPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(targetPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveDashboardDistPath(): Promise<string | undefined> {
+  if (process.env.FEAS_DASHBOARD_DIST) {
+    return process.env.FEAS_DASHBOARD_DIST;
+  }
+
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(currentDir, "../../dashboard/dist"),
+    path.resolve(currentDir, "../packages/dashboard/dist"),
+  ];
+
+  for (const candidate of candidates) {
+    if (await directoryExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
 async function promptRequired(label: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error(`Missing ${label}. Provide it with a flag when running non-interactively.`);
@@ -322,7 +351,7 @@ program
     }
 
     const token = randomBytes(16).toString("hex");
-    const dashboardDistPath = path.resolve(fileURLToPath(new URL("../../dashboard/dist", import.meta.url)));
+    const dashboardDistPath = await resolveDashboardDistPath();
     const server = await startLocalApiServer({
       port: parsedPort,
       token,

@@ -5,17 +5,19 @@
   "description": "Local release automation for Expo and React Native apps.",
   "packageManager": "pnpm@10.0.0",
   "scripts": {
-    "build": "pnpm -r run build",
+    "build": "pnpm -r run build && pnpm build:npm",
     "dev": "pnpm --filter feas-cli dev",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
     "test": "node --test tests/smoke/*.test.mjs tests/integration/*.test.mjs",
     "test:smoke": "node --test tests/smoke/*.test.mjs",
     "test:integration": "node --test tests/integration/*.test.mjs",
-    "db:generate": "pnpm --filter feas-db db:generate"
+    "db:generate": "pnpm --filter feas-db db:generate",
+    "build:npm": "node scripts/build-npm.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.1",
+    "esbuild": "^0.28.0",
     "typescript": "^5.8.3"
   },
   "type": "module",
@@ -24,11 +26,16 @@
   },
   "files": [
     "bin",
+    "dist",
+    "packages/dashboard/dist",
+    "packages/db/prisma",
     "README.md",
     "LICENSE"
   ],
   "dependencies": {
-    "feas-cli": "workspace:^"
+    "@prisma/client": "^6.19.3",
+    "fastify": "^5.2.1",
+    "commander": "^14.0.0"
   },
   "publishConfig": {
     "access": "public"
