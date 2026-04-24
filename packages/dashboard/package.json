@@ -1,0 +1,12 @@
+{
+  "name": "@feas/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"Dashboard scaffold pending\"",
+    "dev": "echo \"Dashboard scaffold pending\"",
+    "typecheck": "echo \"Dashboard scaffold pending\"",
+    "lint": "echo \"Dashboard scaffold pending\""
+  }
+}

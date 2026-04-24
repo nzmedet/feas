@@ -1,0 +1,21 @@
+{
+  "name": "@feas/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "feas": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts --help",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo \"No lints configured for @feas/cli yet\""
+  },
+  "dependencies": {
+    "commander": "^14.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}
