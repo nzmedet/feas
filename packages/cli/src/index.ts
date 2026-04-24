@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { startLocalApiServer } from "@feas/api";
 import {
+  cleanProject,
   configureAndroidCredentials,
   configureIosCredentials,
   initFeasProject,
@@ -409,6 +410,22 @@ credentials
 
     if (!result.ios.configured || !result.android.configured) {
       process.exitCode = 1;
+    }
+  });
+
+program
+  .command("clean")
+  .description("Clean local FEAS build/runtime artifacts")
+  .option("--all", "Remove entire local project state under ~/.feas/projects/<id>", false)
+  .action(async (options) => {
+    const result = await cleanProject({
+      cwd: process.cwd(),
+      all: options.all,
+    });
+
+    process.stdout.write(`Clean completed for ${result.project.displayName}\n`);
+    for (const entry of result.removed) {
+      process.stdout.write(`  removed: ${entry}\n`);
     }
   });
 

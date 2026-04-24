@@ -182,6 +182,11 @@ export interface CredentialsValidationResult {
   };
 }
 
+export interface CleanProjectResult {
+  project: FeasProjectInfo;
+  removed: string[];
+}
+
 export interface ConfigureIosCredentialsOptions {
   cwd: string;
   keyId?: string;
@@ -1681,6 +1686,56 @@ export async function validateCredentials(options: { cwd: string }): Promise<Cre
       configured: androidMissing.length === 0,
       missing: androidMissing,
     },
+  };
+}
+
+export async function cleanProject(options: { cwd: string; all?: boolean }): Promise<CleanProjectResult> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectPath, internalConfigPath, databasePath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before clean.");
+  }
+
+  const removed: string[] = [];
+
+  if (options.all) {
+    await fs.rm(projectPath, { recursive: true, force: true });
+    removed.push(projectPath);
+    return { project: detection, removed };
+  }
+
+  const targets = [
+    path.join(projectPath, "artifacts"),
+    path.join(projectPath, "logs"),
+    path.join(projectPath, "cache"),
+  ];
+
+  for (const target of targets) {
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.mkdir(target, { recursive: true });
+    removed.push(target);
+  }
+
+  if (await fileExists(databasePath)) {
+    await fs.rm(databasePath, { force: true });
+    removed.push(databasePath);
+  }
+
+  await ensureProjectDatabase({
+    databasePath,
+    project: {
+      id: resolveProjectIdentity(detection).projectId,
+      name: detection.displayName,
+      rootPath: detection.rootPath,
+    },
+  });
+  if (!removed.includes(databasePath)) {
+    removed.push(databasePath);
+  }
+
+  return {
+    project: detection,
+    removed,
   };
 }
 
