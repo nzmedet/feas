@@ -4,7 +4,13 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createBuildRecord, createSubmissionRecord, ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
+import {
+  createBuildRecord,
+  createReleaseRecord,
+  createSubmissionRecord,
+  ensureProjectDatabase,
+  recordDoctorChecks,
+} from "@feas/db";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -98,6 +104,32 @@ export interface RunSubmitResult {
   profile: string;
   project: FeasProjectInfo;
   submission: SubmissionExecution;
+}
+
+export interface RunReleaseOptions {
+  cwd: string;
+  platform: BuildPlatform;
+  profile?: string;
+  dryRun?: boolean;
+  skipSubmit?: boolean;
+}
+
+export interface ReleaseExecution {
+  id: string;
+  platform: "ios" | "android";
+  profile: string;
+  status: "success" | "failed";
+  buildId?: string;
+  submissionId?: string;
+  startedAt: string;
+  finishedAt: string;
+  errorMessage?: string;
+}
+
+export interface RunReleaseResult {
+  profile: string;
+  project: FeasProjectInfo;
+  releases: ReleaseExecution[];
 }
 
 export type DoctorPlatform = "all" | "ios" | "android";
@@ -811,6 +843,107 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
       errorCode,
       errorMessage,
     },
+  };
+}
+
+export async function runRelease(options: RunReleaseOptions): Promise<RunReleaseResult> {
+  const profile = options.profile ?? "production";
+  const dryRun = options.dryRun ?? false;
+  const skipSubmit = options.skipSubmit ?? false;
+  const { detection } = await detectProject(options.cwd);
+  const { projectId, databasePath } = resolveProjectStoragePaths(detection);
+
+  const targetPlatforms: Array<"ios" | "android"> = [];
+  if (options.platform === "all") {
+    if (detection.platforms.ios) {
+      targetPlatforms.push("ios");
+    }
+    if (detection.platforms.android) {
+      targetPlatforms.push("android");
+    }
+  } else {
+    targetPlatforms.push(options.platform);
+  }
+
+  if (targetPlatforms.length === 0) {
+    throw new Error("No target platforms available for release.");
+  }
+
+  const releases: ReleaseExecution[] = [];
+
+  for (const platform of targetPlatforms) {
+    const releaseId = randomUUID();
+    const startedAt = new Date();
+    let finishedAt = startedAt;
+    let status: ReleaseExecution["status"] = "success";
+    let errorMessage: string | undefined;
+    let buildId: string | undefined;
+    let submissionId: string | undefined;
+
+    const buildResult = await runBuild({
+      cwd: options.cwd,
+      platform,
+      profile,
+      dryRun,
+    });
+    const buildExecution = buildResult.builds[0];
+    buildId = buildExecution?.id;
+
+    if (!buildExecution || buildExecution.status === "failed") {
+      status = "failed";
+      errorMessage = buildExecution?.errorMessage ?? "Build step failed.";
+      finishedAt = new Date();
+    } else if (!skipSubmit) {
+      const submitResult = await runSubmit({
+        cwd: options.cwd,
+        platform,
+        path: buildExecution.artifactPath,
+        profile,
+        dryRun,
+      });
+      submissionId = submitResult.submission.id;
+      if (submitResult.submission.status === "failed") {
+        status = "failed";
+        errorMessage = submitResult.submission.errorMessage ?? "Submit step failed.";
+      }
+      finishedAt = new Date();
+    } else {
+      finishedAt = new Date();
+    }
+
+    await createReleaseRecord({
+      databasePath,
+      release: {
+        id: releaseId,
+        projectId,
+        platform,
+        profile,
+        status,
+        buildId,
+        submissionId,
+        startedAt,
+        finishedAt,
+        errorMessage,
+      },
+    });
+
+    releases.push({
+      id: releaseId,
+      platform,
+      profile,
+      status,
+      buildId,
+      submissionId,
+      startedAt: startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      errorMessage,
+    });
+  }
+
+  return {
+    profile,
+    project: detection,
+    releases,
   };
 }
 

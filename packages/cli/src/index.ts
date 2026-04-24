@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initFeasProject, resolveFeasConfig, runBuild, runDoctor, runSubmit } from "@feas/core";
+import { initFeasProject, resolveFeasConfig, runBuild, runDoctor, runRelease, runSubmit } from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -151,6 +151,60 @@ program
     }
 
     if (submission.status === "failed") {
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("release")
+  .description("Bump, build, submit")
+  .argument("<platform>", "Target platform: ios | android | all")
+  .option("--profile <profile>", "EAS profile to use", "production")
+  .option("--dry-run", "Preview release without executing native build/store APIs", false)
+  .option("--skip-submit", "Skip submit step", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (platformArg, options) => {
+    if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
+    }
+
+    const result = await runRelease({
+      cwd: process.cwd(),
+      platform: platformArg,
+      profile: options.profile,
+      dryRun: options.dryRun,
+      skipSubmit: options.skipSubmit,
+    });
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
+    process.stdout.write(`Release profile: ${result.profile}\n`);
+    process.stdout.write(`Project: ${result.project.displayName}\n`);
+    process.stdout.write(`Root: ${result.project.rootPath}\n`);
+    process.stdout.write("\n");
+
+    let hasFailures = false;
+    for (const release of result.releases) {
+      const icon = release.status === "success" ? "PASS" : "FAIL";
+      process.stdout.write(`[${icon}] ${release.platform.toUpperCase()} release ${release.id}\n`);
+      if (release.buildId) {
+        process.stdout.write(`  Build: ${release.buildId}\n`);
+      }
+      if (release.submissionId) {
+        process.stdout.write(`  Submission: ${release.submissionId}\n`);
+      }
+      if (release.errorMessage) {
+        process.stdout.write(`  Error: ${release.errorMessage}\n`);
+      }
+      if (release.status === "failed") {
+        hasFailures = true;
+      }
+    }
+
+    if (hasFailures) {
       process.exitCode = 1;
     }
   });
