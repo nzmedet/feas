@@ -134,6 +134,10 @@ export function App() {
   const [runDryRun, setRunDryRun] = useState<boolean>(true);
   const [skipSubmit, setSkipSubmit] = useState<boolean>(false);
   const [metadataPlatform, setMetadataPlatform] = useState<MetadataPlatform>("ios");
+  const [iosKeyId, setIosKeyId] = useState<string>("");
+  const [iosIssuerId, setIosIssuerId] = useState<string>("");
+  const [iosPrivateKeyPath, setIosPrivateKeyPath] = useState<string>("");
+  const [androidServiceAccountPath, setAndroidServiceAccountPath] = useState<string>("");
 
   const [latestLogContent, setLatestLogContent] = useState<string>("No log selected.");
   const [actionBusy, setActionBusy] = useState<string | null>(null);
@@ -320,6 +324,30 @@ export function App() {
     },
     [project, token],
   );
+
+  const handleConfigureIosCredentials = useCallback(async () => {
+    if (!project) {
+      return;
+    }
+    await runAction("Configure iOS credentials", async () => {
+      await apiWrite(`/api/projects/${project.id}/credentials/ios`, token, "POST", {
+        keyId: iosKeyId || undefined,
+        issuerId: iosIssuerId || undefined,
+        privateKeyPath: iosPrivateKeyPath || undefined,
+      });
+    });
+  }, [project, runAction, token, iosKeyId, iosIssuerId, iosPrivateKeyPath]);
+
+  const handleConfigureAndroidCredentials = useCallback(async () => {
+    if (!project) {
+      return;
+    }
+    await runAction("Configure Android credentials", async () => {
+      await apiWrite(`/api/projects/${project.id}/credentials/android`, token, "POST", {
+        serviceAccountPath: androidServiceAccountPath || undefined,
+      });
+    });
+  }, [project, runAction, token, androidServiceAccountPath]);
 
   const buildFailed = builds.filter((b) => b.status !== "success").length;
   const doctorFailed = doctor.filter((d) => d.status === "fail").length;
@@ -627,6 +655,32 @@ export function App() {
         {!loading && !error && view === "credentials" && (
           <div className="panel">
             <h3>Credentials</h3>
+            <div className="credentials-grid">
+              <div className="credentials-form">
+                <div className="form-title">Configure iOS</div>
+                <input value={iosKeyId} onChange={(e) => setIosKeyId(e.target.value)} placeholder="Key ID" />
+                <input value={iosIssuerId} onChange={(e) => setIosIssuerId(e.target.value)} placeholder="Issuer ID" />
+                <input
+                  value={iosPrivateKeyPath}
+                  onChange={(e) => setIosPrivateKeyPath(e.target.value)}
+                  placeholder="/absolute/path/AuthKey_XXXX.p8"
+                />
+                <button disabled={!!actionBusy} onClick={() => void handleConfigureIosCredentials()}>
+                  {actionBusy === "Configure iOS credentials" ? "Saving..." : "Save iOS Credentials"}
+                </button>
+              </div>
+              <div className="credentials-form">
+                <div className="form-title">Configure Android</div>
+                <input
+                  value={androidServiceAccountPath}
+                  onChange={(e) => setAndroidServiceAccountPath(e.target.value)}
+                  placeholder="/absolute/path/service-account.json"
+                />
+                <button disabled={!!actionBusy} onClick={() => void handleConfigureAndroidCredentials()}>
+                  {actionBusy === "Configure Android credentials" ? "Saving..." : "Save Android Credentials"}
+                </button>
+              </div>
+            </div>
             <table>
               <thead>
                 <tr>
