@@ -9,8 +9,9 @@
     "dev": "pnpm --filter @feas/cli dev",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
-    "test": "node --test tests/smoke/*.test.mjs",
+    "test": "node --test tests/smoke/*.test.mjs tests/integration/*.test.mjs",
     "test:smoke": "node --test tests/smoke/*.test.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
     "db:generate": "pnpm --filter @feas/db db:generate"
   },
   "devDependencies": {

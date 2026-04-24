@@ -29,6 +29,11 @@ export interface StartLocalApiServerOptions {
   dashboardDistPath?: string;
 }
 
+export interface LocalApiServerHandle {
+  url: string;
+  close: () => Promise<void>;
+}
+
 interface FeasGlobalConfig {
   projects?: Record<
     string,
@@ -351,7 +356,7 @@ function dashboardHtml(port: number, token: string): string {
 </html>`;
 }
 
-export async function startLocalApiServer(options: StartLocalApiServerOptions): Promise<{ url: string }> {
+export async function startLocalApiServer(options: StartLocalApiServerOptions): Promise<LocalApiServerHandle> {
   const app = createApiServer();
   const expectedToken = options.token;
   const dashboardDistPath = options.dashboardDistPath;
@@ -795,5 +800,8 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
 
   return {
     url: `http://localhost:${options.port}?token=${expectedToken}`,
+    close: async () => {
+      await app.close();
+    },
   };
 }

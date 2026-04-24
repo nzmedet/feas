@@ -53,10 +53,11 @@ Last updated: 2026-04-24
 - [x] Monorepo `typecheck` passes
 - [x] Monorepo `build` passes
 - [x] CLI smoke test added (`node:test` over init/config/build/submit/release/metadata dry-run flow)
-- [x] GitHub Actions CI added (`typecheck` + `build` + smoke test)
+- [x] GitHub Actions CI added (`typecheck` + `build` + test suite)
+- [x] API integration test added (`node:test` against running local API server)
 
 ## In Progress / Next
-- [ ] Expand automated tests (unit + API integration + dashboard smoke)
+- [ ] Expand automated tests (unit + dashboard smoke)
 - [ ] Improve dashboard action feedback (streaming/progress states)
 - [ ] Add richer release history drill-down and links between run artifacts
 - [ ] Harden credential UX (validation hints + safer path checks)
