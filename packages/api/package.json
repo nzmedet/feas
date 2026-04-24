@@ -11,6 +11,7 @@
     "lint": "echo \"No lints configured for @feas/api yet\""
   },
   "dependencies": {
+    "@feas/db": "workspace:*",
     "fastify": "^5.2.1"
   }
 }

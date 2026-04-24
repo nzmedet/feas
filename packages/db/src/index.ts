@@ -69,6 +69,18 @@ export interface ReleaseRecordInput {
   errorMessage?: string;
 }
 
+export interface ProjectSummaryRow {
+  id: string;
+  status: string;
+  platform: string;
+  profile?: string | null;
+  startedAt: string;
+  finishedAt?: string | null;
+  artifactPath?: string | null;
+  logPath?: string | null;
+  errorMessage?: string | null;
+}
+
 const MIGRATION_PATHS = ["20260424163000_init/migration.sql"];
 
 function toSqliteDatasourceUrl(databasePath: string): string {
@@ -200,6 +212,83 @@ export async function createReleaseRecord(input: { databasePath: string; release
     await prisma.release.create({
       data: input.release,
     });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function getProjectBuilds(databasePath: string, limit = 50): Promise<ProjectSummaryRow[]> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const rows = await prisma.build.findMany({
+      orderBy: { startedAt: "desc" },
+      take: limit,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      platform: row.platform,
+      profile: row.profile,
+      startedAt: row.startedAt.toISOString(),
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      artifactPath: row.artifactPath,
+      logPath: row.logPath,
+      errorMessage: row.errorMessage,
+    }));
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function getProjectReleases(databasePath: string, limit = 50): Promise<ProjectSummaryRow[]> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const rows = await prisma.release.findMany({
+      orderBy: { startedAt: "desc" },
+      take: limit,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      platform: row.platform,
+      profile: row.profile,
+      startedAt: row.startedAt.toISOString(),
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      artifactPath: null,
+      logPath: null,
+      errorMessage: row.errorMessage,
+    }));
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function getProjectDoctorChecks(databasePath: string, limit = 100): Promise<
+  Array<{
+    id: string;
+    category: string;
+    name: string;
+    status: string;
+    message: string | null;
+    fixCommand: string | null;
+    checkedAt: string;
+  }>
+> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const rows = await prisma.doctorCheck.findMany({
+      orderBy: { checkedAt: "desc" },
+      take: limit,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      category: row.category,
+      name: row.name,
+      status: row.status,
+      message: row.message,
+      fixCommand: row.fixCommand,
+      checkedAt: row.checkedAt.toISOString(),
+    }));
   } finally {
     await prisma.$disconnect();
   }

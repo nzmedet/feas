@@ -17,6 +17,9 @@ importers:
 
   packages/api:
     dependencies:
+      '@feas/db':
+        specifier: workspace:*
+        version: link:../db
       fastify:
         specifier: ^5.2.1
         version: 5.8.5
