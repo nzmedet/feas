@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initFeasProject, resolveFeasConfig, runDoctor } from "@feas/core";
+import { initFeasProject, resolveFeasConfig, runBuild, runDoctor } from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -53,6 +53,57 @@ program
     process.stdout.write(`Profile: ${profile}\n`);
     process.stdout.write(`Platform iOS: ${platforms.ios ? "yes" : "no"}\n`);
     process.stdout.write(`Platform Android: ${platforms.android ? "yes" : "no"}\n`);
+  });
+
+program
+  .command("build")
+  .description("Build local binary only")
+  .argument("<platform>", "Target platform: ios | android | all")
+  .option("--profile <profile>", "EAS profile to use", "production")
+  .option("--dry-run", "Preview build without executing native build tools", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (platformArg, options) => {
+    if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
+    }
+
+    const result = await runBuild({
+      cwd: process.cwd(),
+      platform: platformArg,
+      profile: options.profile,
+      dryRun: options.dryRun,
+    });
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
+    process.stdout.write(`Build profile: ${result.profile}\n`);
+    process.stdout.write(`Project: ${result.project.displayName}\n`);
+    process.stdout.write(`Root: ${result.project.rootPath}\n`);
+    process.stdout.write("\n");
+
+    let hasFailures = false;
+    for (const build of result.builds) {
+      const icon = build.status === "success" ? "PASS" : "FAIL";
+      process.stdout.write(`[${icon}] ${build.platform.toUpperCase()} build ${build.id}\n`);
+      process.stdout.write(`  Mode: ${build.dryRun ? "dry-run" : "real"}\n`);
+      process.stdout.write(`  Artifact: ${build.artifactPath}\n`);
+      process.stdout.write(`  Log: ${build.logPath}\n`);
+      process.stdout.write(`  Command: ${build.command}\n`);
+      process.stdout.write(`  Duration: ${build.durationMs}ms\n`);
+      if (build.errorMessage) {
+        process.stdout.write(`  Error: ${build.errorMessage}\n`);
+      }
+      if (build.status === "failed") {
+        hasFailures = true;
+      }
+    }
+
+    if (hasFailures) {
+      process.exitCode = 1;
+    }
   });
 
 program

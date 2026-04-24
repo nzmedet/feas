@@ -21,6 +21,23 @@ export interface DoctorCheckRecordInput {
   fixCommand?: string;
 }
 
+export interface BuildRecordInput {
+  id: string;
+  projectId: string;
+  platform: string;
+  profile: string;
+  status: string;
+  version?: string;
+  buildNumber?: string;
+  artifactPath?: string;
+  logPath?: string;
+  startedAt: Date;
+  finishedAt?: Date;
+  durationMs?: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 const MIGRATION_PATHS = ["20260424163000_init/migration.sql"];
 
 function toSqliteDatasourceUrl(databasePath: string): string {
@@ -112,6 +129,18 @@ export async function recordDoctorChecks(input: {
         fixCommand: check.fixCommand,
         checkedAt,
       })),
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function createBuildRecord(input: { databasePath: string; build: BuildRecordInput }): Promise<void> {
+  const prisma = createPrismaClient(input.databasePath);
+
+  try {
+    await prisma.build.create({
+      data: input.build,
     });
   } finally {
     await prisma.$disconnect();

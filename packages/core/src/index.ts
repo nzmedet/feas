@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
+import { createBuildRecord, ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -33,6 +33,38 @@ export interface InitFeasProjectResult {
   projectPath: string;
   feasHomePath: string;
   detection: FeasProjectInfo;
+}
+
+export type BuildPlatform = "ios" | "android" | "all";
+
+export interface RunBuildOptions {
+  cwd: string;
+  platform: BuildPlatform;
+  profile?: string;
+  dryRun?: boolean;
+  verbose?: boolean;
+}
+
+export interface BuildExecution {
+  id: string;
+  platform: "ios" | "android";
+  profile: string;
+  status: "success" | "failed";
+  dryRun: boolean;
+  artifactPath: string;
+  logPath: string;
+  command: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface RunBuildResult {
+  profile: string;
+  project: FeasProjectInfo;
+  builds: BuildExecution[];
 }
 
 export type DoctorPlatform = "all" | "ios" | "android";
@@ -318,6 +350,22 @@ function summarizeChecks(checks: DoctorCheck[]): RunDoctorResult["summary"] {
   );
 }
 
+function sanitizeForFileName(input: string): string {
+  return input.replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
+function timestampForFileName(date: Date): string {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+function buildCommandForPlatform(platform: "ios" | "android"): string {
+  if (platform === "ios") {
+    return "fastlane ios build";
+  }
+
+  return "fastlane android build";
+}
+
 function buildInternalConfig(result: {
   detection: FeasProjectInfo;
   profile: string;
@@ -471,6 +519,146 @@ export async function resolveFeasConfig(options: { cwd: string; profile?: string
       homePath: getFeasHomeDir(),
       version: getFeasVersion(),
     },
+  };
+}
+
+export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult> {
+  const profile = options.profile ?? "production";
+  const dryRun = options.dryRun ?? false;
+  const { detection, easConfig } = await detectProject(options.cwd);
+  const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
+
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before running build.");
+  }
+
+  if (!easConfig.build?.[profile]) {
+    throw new Error(`Build profile '${profile}' not found in eas.json.`);
+  }
+
+  await ensureProjectDatabase({
+    databasePath,
+    project: {
+      id: projectId,
+      name: detection.displayName,
+      rootPath: detection.rootPath,
+    },
+  });
+
+  const targetPlatforms: Array<"ios" | "android"> = [];
+  if (options.platform === "all") {
+    if (detection.platforms.ios) {
+      targetPlatforms.push("ios");
+    }
+    if (detection.platforms.android) {
+      targetPlatforms.push("android");
+    }
+  } else {
+    targetPlatforms.push(options.platform);
+  }
+
+  if (targetPlatforms.length === 0) {
+    throw new Error("No target platforms available for build.");
+  }
+
+  for (const platform of targetPlatforms) {
+    if (!detection.platforms[platform]) {
+      throw new Error(`Platform '${platform}' is not configured for this project.`);
+    }
+  }
+
+  const builds: BuildExecution[] = [];
+
+  for (const platform of targetPlatforms) {
+    const startedAt = new Date();
+    const buildId = randomUUID();
+    const command = buildCommandForPlatform(platform);
+    const timestamp = timestampForFileName(startedAt);
+    const artifactExtension = platform === "ios" ? "ipa" : "aab";
+    const artifactPath = path.join(
+      projectPath,
+      "artifacts",
+      platform,
+      `${sanitizeForFileName(detection.displayName)}-${sanitizeForFileName(profile)}-${timestamp}.${artifactExtension}`,
+    );
+    const logPath = path.join(projectPath, "logs", "builds", `build-${timestamp}-${platform}-${buildId}.log`);
+
+    await fs.mkdir(path.dirname(artifactPath), { recursive: true });
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+
+    let status: BuildExecution["status"] = "success";
+    let errorCode: string | undefined;
+    let errorMessage: string | undefined;
+    const logLines: string[] = [];
+    logLines.push(`[feas] build id: ${buildId}`);
+    logLines.push(`[feas] platform: ${platform}`);
+    logLines.push(`[feas] profile: ${profile}`);
+    logLines.push(`[feas] command: ${command}`);
+    logLines.push(`[feas] startedAt: ${startedAt.toISOString()}`);
+
+    if (dryRun) {
+      logLines.push("[feas] mode: dry-run");
+      logLines.push("[feas] build execution skipped.");
+      await fs.writeFile(
+        artifactPath,
+        `Dry-run placeholder artifact for ${detection.displayName} (${platform}, profile=${profile}).\n`,
+        "utf8",
+      );
+    } else {
+      status = "failed";
+      errorCode = "BUILD_NOT_IMPLEMENTED";
+      errorMessage = "Real native build execution is not implemented yet. Re-run with --dry-run for preview mode.";
+      logLines.push("[feas] mode: real");
+      logLines.push(`[feas] errorCode: ${errorCode}`);
+      logLines.push(`[feas] errorMessage: ${errorMessage}`);
+    }
+
+    const finishedAt = new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+    logLines.push(`[feas] finishedAt: ${finishedAt.toISOString()}`);
+    logLines.push(`[feas] durationMs: ${durationMs}`);
+    logLines.push(`[feas] status: ${status}`);
+    await fs.writeFile(logPath, `${logLines.join("\n")}\n`, "utf8");
+
+    await createBuildRecord({
+      databasePath,
+      build: {
+        id: buildId,
+        projectId,
+        platform,
+        profile,
+        status,
+        artifactPath,
+        logPath,
+        startedAt,
+        finishedAt,
+        durationMs,
+        errorCode,
+        errorMessage,
+      },
+    });
+
+    builds.push({
+      id: buildId,
+      platform,
+      profile,
+      status,
+      dryRun,
+      artifactPath,
+      logPath,
+      command,
+      startedAt: startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      durationMs,
+      errorCode,
+      errorMessage,
+    });
+  }
+
+  return {
+    profile,
+    project: detection,
+    builds,
   };
 }
 
