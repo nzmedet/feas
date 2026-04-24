@@ -1,5 +1,5 @@
 {
-  "name": "feas",
+  "name": "@nzmedet/feas",
   "version": "0.1.0",
   "private": false,
   "description": "Local release automation for Expo and React Native apps.",
