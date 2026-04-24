@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -62,6 +63,11 @@ export interface RunDoctorResult {
     warn: number;
     fail: number;
     skip: number;
+  };
+  persistence: {
+    saved: boolean;
+    databasePath?: string;
+    reason?: string;
   };
 }
 
@@ -176,6 +182,33 @@ function createProjectId(rootPath: string, packageName: string, bundleIdentifier
   return createHash("sha256")
     .update(`${rootPath}|${packageName}|${bundleIdentifier}`)
     .digest("hex");
+}
+
+function resolveProjectIdentity(detection: FeasProjectInfo): { projectId: string; primaryBundleId: string } {
+  const primaryBundleId = detection.bundleIdentifiers.ios ?? detection.bundleIdentifiers.android ?? "unknown.bundle";
+  const projectId = createProjectId(detection.rootPath, detection.packageName, primaryBundleId);
+
+  return { projectId, primaryBundleId };
+}
+
+function resolveProjectStoragePaths(detection: FeasProjectInfo): {
+  projectId: string;
+  feasHomePath: string;
+  projectPath: string;
+  databasePath: string;
+  internalConfigPath: string;
+} {
+  const { projectId } = resolveProjectIdentity(detection);
+  const feasHomePath = getFeasHomeDir();
+  const projectPath = path.join(feasHomePath, "projects", projectId);
+
+  return {
+    projectId,
+    feasHomePath,
+    projectPath,
+    databasePath: path.join(projectPath, "database.sqlite"),
+    internalConfigPath: path.join(projectPath, "internal.config.json"),
+  };
 }
 
 async function readAppJsonConfig(projectRoot: string): Promise<{
@@ -336,13 +369,7 @@ function buildInternalConfig(result: {
 export async function initFeasProject(options: InitFeasProjectOptions): Promise<InitFeasProjectResult> {
   const profile = options.profile ?? "production";
   const { detection } = await detectProject(options.cwd);
-
-  const primaryBundleId = detection.bundleIdentifiers.ios ?? detection.bundleIdentifiers.android ?? "unknown.bundle";
-  const projectId = createProjectId(detection.rootPath, detection.packageName, primaryBundleId);
-
-  const feasHomePath = getFeasHomeDir();
-  const projectPath = path.join(feasHomePath, "projects", projectId);
-  const internalConfigPath = path.join(projectPath, "internal.config.json");
+  const { projectId, feasHomePath, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
 
   if (!options.force && (await fileExists(internalConfigPath))) {
     throw new Error(`Project already initialized at ${projectPath}. Re-run with --force to regenerate FEAS state.`);
@@ -399,10 +426,14 @@ export async function initFeasProject(options: InitFeasProjectOptions): Promise<
     updatedAt: now,
   });
 
-  const sqlitePath = path.join(projectPath, "database.sqlite");
-  if (!(await fileExists(sqlitePath))) {
-    await fs.writeFile(sqlitePath, "", "utf8");
-  }
+  await ensureProjectDatabase({
+    databasePath,
+    project: {
+      id: projectId,
+      name: detection.displayName,
+      rootPath: detection.rootPath,
+    },
+  });
 
   return {
     projectId,
@@ -660,12 +691,47 @@ export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorRes
     });
   }
 
+  const { projectId, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
+  let persistence: RunDoctorResult["persistence"] = {
+    saved: false,
+    reason: "Project not initialized. Run `feas init` to enable doctor history persistence.",
+  };
+
+  if (await fileExists(internalConfigPath)) {
+    await ensureProjectDatabase({
+      databasePath,
+      project: {
+        id: projectId,
+        name: detection.displayName,
+        rootPath: detection.rootPath,
+      },
+    });
+
+    await recordDoctorChecks({
+      databasePath,
+      projectId,
+      checks: checks.map((check) => ({
+        category: check.category,
+        name: check.name,
+        status: check.status,
+        message: check.message,
+        fixCommand: check.fixCommand,
+      })),
+    });
+
+    persistence = {
+      saved: true,
+      databasePath,
+    };
+  }
+
   return {
     platform,
     profile,
     project: detection,
     checks,
     summary: summarizeChecks(checks),
+    persistence,
   };
 }
 

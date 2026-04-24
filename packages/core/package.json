@@ -9,5 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo \"No lints configured for @feas/core yet\""
+  },
+  "dependencies": {
+    "@feas/db": "workspace:*"
   }
 }

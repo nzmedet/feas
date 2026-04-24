@@ -98,6 +98,9 @@ program
     process.stdout.write(
       `Summary: pass=${result.summary.pass} warn=${result.summary.warn} fail=${result.summary.fail} skip=${result.summary.skip}\n`,
     );
+    process.stdout.write(
+      `Doctor history: ${result.persistence.saved ? `saved (${result.persistence.databasePath})` : `not saved (${result.persistence.reason})`}\n`,
+    );
 
     if (result.summary.fail > 0) {
       process.exitCode = 1;

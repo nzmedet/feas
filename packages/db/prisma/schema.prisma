@@ -14,5 +14,85 @@ model Project {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  builds       Build[]
+  submissions  Submission[]
+  releases     Release[]
+  doctorChecks DoctorCheck[]
+
   @@map("projects")
+}
+
+model Build {
+  id           String    @id
+  projectId    String    @map("project_id")
+  platform     String
+  profile      String
+  status       String
+  version      String?
+  buildNumber  String?   @map("build_number")
+  artifactPath String?   @map("artifact_path")
+  logPath      String?   @map("log_path")
+  startedAt    DateTime  @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  durationMs   Int?      @map("duration_ms")
+  errorCode    String?   @map("error_code")
+  errorMessage String?   @map("error_message")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("builds")
+}
+
+model Submission {
+  id           String    @id
+  projectId    String    @map("project_id")
+  buildId      String?   @map("build_id")
+  platform     String
+  store        String
+  status       String
+  remoteId     String?   @map("remote_id")
+  logPath      String?   @map("log_path")
+  startedAt    DateTime  @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  errorCode    String?   @map("error_code")
+  errorMessage String?   @map("error_message")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("submissions")
+}
+
+model Release {
+  id            String    @id
+  projectId     String    @map("project_id")
+  platform      String
+  profile       String
+  status        String
+  version       String?
+  buildNumber   String?   @map("build_number")
+  buildId       String?   @map("build_id")
+  submissionId  String?   @map("submission_id")
+  releaseNotes  String?   @map("release_notes")
+  startedAt     DateTime  @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  errorMessage  String?   @map("error_message")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("releases")
+}
+
+model DoctorCheck {
+  id         String   @id
+  projectId  String   @map("project_id")
+  category   String
+  name       String
+  status     String
+  message    String?
+  fixCommand String?  @map("fix_command")
+  checkedAt  DateTime @map("checked_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("doctor_checks")
 }

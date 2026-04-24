@@ -34,18 +34,22 @@ importers:
         specifier: ^4.19.3
         version: 4.21.0
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      '@feas/db':
+        specifier: workspace:*
+        version: link:../db
 
   packages/dashboard: {}
 
   packages/db:
     dependencies:
       '@prisma/client':
-        specifier: ^6.7.0
+        specifier: ^6.19.3
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
     devDependencies:
       prisma:
-        specifier: ^6.7.0
+        specifier: ^6.19.3
         version: 6.19.3(typescript@5.9.3)
 
 packages:
