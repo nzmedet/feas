@@ -5,7 +5,9 @@ import path from "node:path";
 import {
   configureAndroidCredentials,
   configureIosCredentials,
+  runBuild,
   runDoctor,
+  runRelease,
   runMetadataPull,
   runMetadataPush,
   runMetadataValidate,
@@ -472,8 +474,27 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     return build;
   });
 
-  app.post("/api/projects/:id/builds", async (_request, reply) => {
-    reply.code(501).send({ error: "not_implemented", message: "Use CLI `feas build` for now." });
+  app.post("/api/projects/:id/builds", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as {
+      platform?: "ios" | "android" | "all";
+      profile?: string;
+      dryRun?: boolean;
+    };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    const result = await runBuild({
+      cwd: projectRoot,
+      platform: body.platform ?? "all",
+      profile: body.profile,
+      dryRun: body.dryRun,
+    });
+    return result;
   });
 
   app.get("/api/projects/:id/releases", async (request, reply) => {
@@ -503,8 +524,29 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     return release;
   });
 
-  app.post("/api/projects/:id/releases", async (_request, reply) => {
-    reply.code(501).send({ error: "not_implemented", message: "Use CLI `feas release` for now." });
+  app.post("/api/projects/:id/releases", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as {
+      platform?: "ios" | "android" | "all";
+      profile?: string;
+      dryRun?: boolean;
+      skipSubmit?: boolean;
+    };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    const result = await runRelease({
+      cwd: projectRoot,
+      platform: body.platform ?? "all",
+      profile: body.profile,
+      dryRun: body.dryRun,
+      skipSubmit: body.skipSubmit,
+    });
+    return result;
   });
 
   app.get("/api/projects/:id/submissions", async (request, reply) => {
