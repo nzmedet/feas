@@ -2,7 +2,18 @@
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { startLocalApiServer } from "@feas/api";
-import { initFeasProject, listLogs, resolveFeasConfig, runBuild, runDoctor, runRelease, runSubmit } from "@feas/core";
+import {
+  initFeasProject,
+  listLogs,
+  resolveFeasConfig,
+  runBuild,
+  runDoctor,
+  runMetadataPull,
+  runMetadataPush,
+  runMetadataValidate,
+  runRelease,
+  runSubmit,
+} from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -278,6 +289,70 @@ program
     process.stdout.write(`FEAS local API started on 127.0.0.1:${parsedPort}\n`);
     process.stdout.write(`Open dashboard URL: ${server.url}\n`);
     process.stdout.write("Press Ctrl+C to stop.\n");
+  });
+
+const metadata = program.command("metadata").description("Manage local and remote store metadata");
+
+metadata
+  .command("pull")
+  .argument("<platform>", "ios | android")
+  .action(async (platformArg) => {
+    if (platformArg !== "ios" && platformArg !== "android") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+    const result = await runMetadataPull({
+      cwd: process.cwd(),
+      platform: platformArg,
+    });
+    process.stdout.write(`Metadata pulled for ${result.platform} into ${result.metadataRoot}\n`);
+  });
+
+metadata
+  .command("push")
+  .argument("<platform>", "ios | android")
+  .action(async (platformArg) => {
+    if (platformArg !== "ios" && platformArg !== "android") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+    const result = await runMetadataPush({
+      cwd: process.cwd(),
+      platform: platformArg,
+    });
+    process.stdout.write(`Metadata push validated for ${result.platform}. Files: ${result.files.length}\n`);
+  });
+
+metadata
+  .command("validate")
+  .argument("<platform>", "ios | android")
+  .action(async (platformArg) => {
+    if (platformArg !== "ios" && platformArg !== "android") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+    const result = await runMetadataValidate({
+      cwd: process.cwd(),
+      platform: platformArg,
+    });
+    process.stdout.write(`Metadata validation for ${result.platform}: ${result.valid ? "valid" : "invalid"}\n`);
+    if (!result.valid) {
+      for (const missing of result.missingFiles) {
+        process.stdout.write(`  Missing: ${missing}\n`);
+      }
+      process.exitCode = 1;
+    }
+  });
+
+metadata
+  .command("open")
+  .argument("<platform>", "ios | android")
+  .action(async (platformArg) => {
+    if (platformArg !== "ios" && platformArg !== "android") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+    const result = await runMetadataPull({
+      cwd: process.cwd(),
+      platform: platformArg,
+    });
+    process.stdout.write(`Metadata directory: ${result.metadataRoot}\n`);
   });
 
 program

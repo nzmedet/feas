@@ -151,6 +151,18 @@ export interface ListLogsResult {
   logs: FeasLogEntry[];
 }
 
+export interface MetadataOperationResult {
+  project: FeasProjectInfo;
+  platform: "ios" | "android";
+  metadataRoot: string;
+  files: string[];
+}
+
+export interface MetadataValidationResult extends MetadataOperationResult {
+  valid: boolean;
+  missingFiles: string[];
+}
+
 export type DoctorPlatform = "all" | "ios" | "android";
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -486,6 +498,24 @@ function inferLogType(fileName: string): FeasLogEntry["type"] {
   }
 
   return "unknown";
+}
+
+function metadataFileNames(platform: "ios" | "android"): string[] {
+  if (platform === "ios") {
+    return [
+      "name.txt",
+      "subtitle.txt",
+      "promotional_text.txt",
+      "description.txt",
+      "keywords.txt",
+      "support_url.txt",
+      "marketing_url.txt",
+      "privacy_url.txt",
+      "release_notes.txt",
+    ];
+  }
+
+  return ["title.txt", "short_description.txt", "full_description.txt", "release_notes.txt", "privacy_policy_url.txt"];
 }
 
 async function runCommand(command: string, args: string[], cwd: string, extraEnv?: Record<string, string>): Promise<CommandExecutionResult> {
@@ -1197,6 +1227,82 @@ export async function listLogs(options: ListLogsOptions): Promise<ListLogsResult
   return {
     project: detection,
     logs,
+  };
+}
+
+export async function runMetadataPull(options: { cwd: string; platform: "ios" | "android" }): Promise<MetadataOperationResult> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before metadata operations.");
+  }
+
+  const metadataRoot = path.join(projectPath, "metadata", options.platform, "en-NZ");
+  await fs.mkdir(metadataRoot, { recursive: true });
+
+  const files: string[] = [];
+  for (const fileName of metadataFileNames(options.platform)) {
+    const filePath = path.join(metadataRoot, fileName);
+    if (!(await fileExists(filePath))) {
+      await fs.writeFile(filePath, "", "utf8");
+    }
+    files.push(filePath);
+  }
+
+  return {
+    project: detection,
+    platform: options.platform,
+    metadataRoot,
+    files,
+  };
+}
+
+export async function runMetadataValidate(options: {
+  cwd: string;
+  platform: "ios" | "android";
+}): Promise<MetadataValidationResult> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before metadata operations.");
+  }
+
+  const metadataRoot = path.join(projectPath, "metadata", options.platform, "en-NZ");
+  const files = metadataFileNames(options.platform).map((name) => path.join(metadataRoot, name));
+  const missingFiles: string[] = [];
+
+  for (const filePath of files) {
+    if (!(await fileExists(filePath))) {
+      missingFiles.push(filePath);
+      continue;
+    }
+    const content = await fs.readFile(filePath, "utf8");
+    if (content.trim().length === 0) {
+      missingFiles.push(filePath);
+    }
+  }
+
+  return {
+    project: detection,
+    platform: options.platform,
+    metadataRoot,
+    files,
+    valid: missingFiles.length === 0,
+    missingFiles,
+  };
+}
+
+export async function runMetadataPush(options: { cwd: string; platform: "ios" | "android" }): Promise<MetadataOperationResult> {
+  const validation = await runMetadataValidate(options);
+  if (!validation.valid) {
+    throw new Error(`Metadata is incomplete for ${options.platform}. Run \`feas metadata validate ${options.platform}\` and fill required files.`);
+  }
+
+  return {
+    project: validation.project,
+    platform: validation.platform,
+    metadataRoot: validation.metadataRoot,
+    files: validation.files,
   };
 }
 
