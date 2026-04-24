@@ -817,9 +817,31 @@ platform :ios do
 
   lane :submit do
     artifact = ENV["FEAS_ARTIFACT_PATH"]
+    submit_real = ENV["FEAS_IOS_SUBMIT_REAL"] == "1"
     UI.user_error!("FEAS_ARTIFACT_PATH is required.") unless artifact
     UI.user_error!("Artifact does not exist: #{artifact}") unless File.exist?(artifact)
-    UI.message("Simulated iOS submit for #{artifact}")
+
+    if submit_real
+      key_id = ENV["FEAS_IOS_KEY_ID"]
+      issuer_id = ENV["FEAS_IOS_ISSUER_ID"]
+      key_path = ENV["FEAS_IOS_API_KEY_PATH"]
+      UI.user_error!("Missing FEAS_IOS_KEY_ID for real iOS submit.") unless key_id
+      UI.user_error!("Missing FEAS_IOS_ISSUER_ID for real iOS submit.") unless issuer_id
+      UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for real iOS submit.") unless key_path
+
+      app_store_connect_api_key(
+        key_id: key_id,
+        issuer_id: issuer_id,
+        key_filepath: key_path
+      )
+
+      pilot(
+        ipa: artifact,
+        skip_waiting_for_build_processing: true
+      )
+    else
+      UI.message("Simulated iOS submit for #{artifact}")
+    end
   end
 end
 
@@ -846,9 +868,26 @@ platform :android do
 
   lane :submit do
     artifact = ENV["FEAS_ARTIFACT_PATH"]
+    submit_real = ENV["FEAS_ANDROID_SUBMIT_REAL"] == "1"
     UI.user_error!("FEAS_ARTIFACT_PATH is required.") unless artifact
     UI.user_error!("Artifact does not exist: #{artifact}") unless File.exist?(artifact)
-    UI.message("Simulated Android submit for #{artifact}")
+
+    if submit_real
+      json_key = ENV["FEAS_ANDROID_SERVICE_ACCOUNT_PATH"]
+      package_name = ENV["FEAS_ANDROID_PACKAGE_NAME"]
+      track = ENV["FEAS_ANDROID_TRACK"] || "internal"
+      UI.user_error!("Missing FEAS_ANDROID_SERVICE_ACCOUNT_PATH for real Android submit.") unless json_key
+      UI.user_error!("Missing FEAS_ANDROID_PACKAGE_NAME for real Android submit.") unless package_name
+
+      supply(
+        aab: artifact,
+        json_key: json_key,
+        package_name: package_name,
+        track: track
+      )
+    else
+      UI.message("Simulated Android submit for #{artifact}")
+    end
   end
 end
 `;
@@ -1247,6 +1286,7 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
   if (!(await fileExists(internalConfigPath))) {
     throw new Error("Project is not initialized. Run `feas init` before running submit.");
   }
+  const internalConfig = await readInternalConfig(internalConfigPath);
 
   if (!detection.platforms[options.platform]) {
     throw new Error(`Platform '${options.platform}' is not configured for this project.`);
@@ -1298,24 +1338,73 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
     logLines.push("[feas] submission execution skipped.");
   } else {
     logLines.push("[feas] mode: real");
-    const commandResult = await runCommand("fastlane", [options.platform, "submit"], path.dirname(fastfilePath), {
+    const secretStore = getSecretStore();
+    let submitEnv: Record<string, string> = {};
+
+    if (options.platform === "ios") {
+      const keyId = await secretStore.get(credentialsKey(projectId, "ios", "key_id"));
+      const issuerId = await secretStore.get(credentialsKey(projectId, "ios", "issuer_id"));
+      const privateKeyPath = await secretStore.get(credentialsKey(projectId, "ios", "private_key_path"));
+
+      if (!keyId || !issuerId || !privateKeyPath) {
+        status = "failed";
+        errorCode = "IOS_CREDENTIALS_MISSING";
+        errorMessage = "Missing iOS submit credentials. Run `feas credentials ios ...` before submitting.";
+      } else if (!(await fileExists(privateKeyPath))) {
+        status = "failed";
+        errorCode = "IOS_API_KEY_FILE_MISSING";
+        errorMessage = `Configured iOS API key file was not found at ${privateKeyPath}.`;
+      } else {
+        submitEnv = {
+          FEAS_IOS_SUBMIT_REAL: "1",
+          FEAS_IOS_KEY_ID: keyId,
+          FEAS_IOS_ISSUER_ID: issuerId,
+          FEAS_IOS_API_KEY_PATH: privateKeyPath,
+        };
+      }
+    } else {
+      const serviceAccountPath = await secretStore.get(credentialsKey(projectId, "android", "service_account_path"));
+      const packageName = internalConfig.platforms.android?.playPackageName ?? detection.bundleIdentifiers.android;
+      if (!serviceAccountPath || !packageName) {
+        status = "failed";
+        errorCode = "ANDROID_CREDENTIALS_MISSING";
+        errorMessage = "Missing Android submit credentials/package name. Run `feas credentials android ...` and verify app id.";
+      } else if (!(await fileExists(serviceAccountPath))) {
+        status = "failed";
+        errorCode = "ANDROID_SERVICE_ACCOUNT_FILE_MISSING";
+        errorMessage = `Configured Android service account file was not found at ${serviceAccountPath}.`;
+      } else {
+        submitEnv = {
+          FEAS_ANDROID_SUBMIT_REAL: "1",
+          FEAS_ANDROID_SERVICE_ACCOUNT_PATH: serviceAccountPath,
+          FEAS_ANDROID_PACKAGE_NAME: packageName,
+          FEAS_ANDROID_TRACK: "internal",
+        };
+      }
+    }
+
+    let commandResult: CommandExecutionResult | null = null;
+    if (!errorCode) {
+      commandResult = await runCommand("fastlane", [options.platform, "submit"], path.dirname(fastfilePath), {
         FASTLANE_SKIP_UPDATE_CHECK: "1",
         FASTLANE_FASTFILE_PATH: fastfilePath,
-      FEAS_ARTIFACT_PATH: resolvedArtifactPath,
-      FEAS_PROJECT_ROOT: detection.rootPath,
-      FEAS_PROFILE: profile,
-    });
+        FEAS_ARTIFACT_PATH: resolvedArtifactPath,
+        FEAS_PROJECT_ROOT: detection.rootPath,
+        FEAS_PROFILE: profile,
+        ...submitEnv,
+      });
+    }
 
-    if (commandResult.stdout.trim().length > 0) {
+    if (commandResult && commandResult.stdout.trim().length > 0) {
       logLines.push("[feas] stdout:");
       logLines.push(commandResult.stdout.trimEnd());
     }
-    if (commandResult.stderr.trim().length > 0) {
+    if (commandResult && commandResult.stderr.trim().length > 0) {
       logLines.push("[feas] stderr:");
       logLines.push(commandResult.stderr.trimEnd());
     }
 
-    if (!commandResult.success) {
+    if (commandResult && !commandResult.success) {
       status = "failed";
       errorCode = "SUBMIT_COMMAND_FAILED";
       errorMessage = `Fastlane submit command failed with exit code ${commandResult.exitCode}.`;
