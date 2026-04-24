@@ -240,6 +240,44 @@ interface FeasGlobalConfig {
   >;
 }
 
+interface InternalConfig {
+  schemaVersion: number;
+  projectId: string;
+  projectRoot: string;
+  displayName: string;
+  platforms: {
+    ios: {
+      bundleIdentifier: string | null;
+      scheme: string | null;
+      workspacePath: string | null;
+      projectPath: string | null;
+      exportMethod: string;
+      appleTeamId: string | null;
+      appStoreConnectAppId: string | null;
+    } | null;
+    android: {
+      applicationId: string | null;
+      gradleTask: string;
+      artifactSourcePath: string;
+      playPackageName: string | null;
+    } | null;
+  };
+  release: {
+    defaultProfile: string;
+    bumpStrategy: string;
+    requireCleanGit: boolean;
+    autoCommitVersionBump: boolean;
+  };
+  metadata: {
+    localPath: string;
+    syncMode: string;
+  };
+  dashboard: {
+    port: number;
+  };
+  generatedAt: string;
+}
+
 const execFileAsync = promisify(execFile);
 
 interface CommandExecutionResult {
@@ -551,6 +589,91 @@ async function runCommand(command: string, args: string[], cwd: string, extraEnv
   }
 }
 
+function toProjectRelativePath(projectRoot: string, absolutePath: string): string {
+  return path.relative(projectRoot, absolutePath);
+}
+
+async function findFirstFileByExtension(directory: string, extension: ".xcworkspace" | ".xcodeproj"): Promise<string | null> {
+  if (!(await fileExists(directory))) {
+    return null;
+  }
+
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const match = entries.find((entry) => entry.name.endsWith(extension));
+  if (!match) {
+    return null;
+  }
+
+  return path.join(directory, match.name);
+}
+
+async function detectIosNativeSettings(projectRoot: string): Promise<{
+  workspacePath: string | null;
+  projectPath: string | null;
+  scheme: string | null;
+}> {
+  const iosDirectory = path.join(projectRoot, "ios");
+  const workspaceAbsolute = await findFirstFileByExtension(iosDirectory, ".xcworkspace");
+  const projectAbsolute = await findFirstFileByExtension(iosDirectory, ".xcodeproj");
+
+  let scheme: string | null = null;
+  const workspaceOrProject = workspaceAbsolute ?? projectAbsolute;
+  if (workspaceOrProject && (await commandExists("xcodebuild"))) {
+    const xcodeArgs = workspaceAbsolute
+      ? ["-workspace", workspaceAbsolute, "-list", "-json"]
+      : ["-project", projectAbsolute as string, "-list", "-json"];
+
+    const result = await runCommand("xcodebuild", xcodeArgs, projectRoot);
+    if (result.success && result.stdout.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(result.stdout) as { project?: { schemes?: string[] }; workspace?: { schemes?: string[] } };
+        const schemes = parsed.workspace?.schemes ?? parsed.project?.schemes ?? [];
+        if (schemes.length > 0) {
+          scheme = schemes[0] ?? null;
+        }
+      } catch {
+        // Best-effort parsing; keep scheme null if xcodebuild output is unexpected.
+      }
+    }
+  }
+
+  return {
+    workspacePath: workspaceAbsolute ? toProjectRelativePath(projectRoot, workspaceAbsolute) : null,
+    projectPath: projectAbsolute ? toProjectRelativePath(projectRoot, projectAbsolute) : null,
+    scheme,
+  };
+}
+
+async function detectAndroidNativeSettings(projectRoot: string): Promise<{
+  gradleTask: string;
+  artifactSourcePath: string;
+}> {
+  const defaultTask = ":app:bundleRelease";
+  const defaultArtifact = "android/app/build/outputs/bundle/release/app-release.aab";
+  const buildGradlePath = path.join(projectRoot, "android", "app", "build.gradle");
+  const buildGradleKtsPath = path.join(projectRoot, "android", "app", "build.gradle.kts");
+
+  if ((await fileExists(buildGradlePath)) || (await fileExists(buildGradleKtsPath))) {
+    return {
+      gradleTask: defaultTask,
+      artifactSourcePath: defaultArtifact,
+    };
+  }
+
+  return {
+    gradleTask: defaultTask,
+    artifactSourcePath: defaultArtifact,
+  };
+}
+
+async function readInternalConfig(internalConfigPath: string): Promise<InternalConfig> {
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error(`Internal FEAS config is missing at ${internalConfigPath}. Re-run \`feas init --force\`.`);
+  }
+
+  return readJsonFile<InternalConfig>(internalConfigPath);
+}
+
 async function writeInternalFastlaneFiles(projectPath: string): Promise<void> {
   const fastlaneDir = path.join(projectPath, "fastlane");
   await fs.mkdir(fastlaneDir, { recursive: true });
@@ -564,9 +687,37 @@ async function writeInternalFastlaneFiles(projectPath: string): Promise<void> {
 platform :ios do
   lane :build do
     artifact = ENV["FEAS_ARTIFACT_PATH"]
+    project_root = ENV["FEAS_PROJECT_ROOT"]
+    scheme = ENV["FEAS_IOS_SCHEME"]
+    workspace = ENV["FEAS_IOS_WORKSPACE"]
+    project = ENV["FEAS_IOS_PROJECT"]
+    export_method = ENV["FEAS_IOS_EXPORT_METHOD"] || "app-store"
+
     UI.user_error!("FEAS_ARTIFACT_PATH is required.") unless artifact
-    sh("mkdir -p \\"$(dirname '#{artifact}')\\"")
-    sh("echo 'Simulated iOS artifact generated by FEAS internal Fastlane lane.' > '#{artifact}'")
+    UI.user_error!("FEAS_PROJECT_ROOT is required.") unless project_root
+    UI.user_error!("FEAS_IOS_SCHEME is required.") unless scheme
+    UI.user_error!("Either FEAS_IOS_WORKSPACE or FEAS_IOS_PROJECT is required.") unless workspace || project
+
+    output_directory = File.dirname(artifact)
+    output_name = File.basename(artifact)
+
+    gym_options = {
+      scheme: scheme,
+      clean: true,
+      output_directory: output_directory,
+      output_name: output_name,
+      export_method: export_method,
+      skip_package_ipa: false
+    }
+
+    if workspace
+      gym_options[:workspace] = workspace
+    else
+      gym_options[:project] = project
+    end
+
+    gym(**gym_options)
+    UI.user_error!("Expected ipa not found at #{artifact}") unless File.exist?(artifact)
   end
 
   lane :submit do
@@ -580,9 +731,22 @@ end
 platform :android do
   lane :build do
     artifact = ENV["FEAS_ARTIFACT_PATH"]
+    project_root = ENV["FEAS_PROJECT_ROOT"]
+    gradle_task = ENV["FEAS_ANDROID_GRADLE_TASK"] || ":app:bundleRelease"
+    source_artifact = ENV["FEAS_ANDROID_ARTIFACT_SOURCE"]
+
     UI.user_error!("FEAS_ARTIFACT_PATH is required.") unless artifact
+    UI.user_error!("FEAS_PROJECT_ROOT is required.") unless project_root
+    UI.user_error!("FEAS_ANDROID_ARTIFACT_SOURCE is required.") unless source_artifact
+
+    gradle(task: gradle_task, project_dir: project_root)
+
+    unless File.exist?(source_artifact)
+      UI.user_error!("Expected Android artifact not found at #{source_artifact}")
+    end
+
     sh("mkdir -p \\"$(dirname '#{artifact}')\\"")
-    sh("echo 'Simulated Android artifact generated by FEAS internal Fastlane lane.' > '#{artifact}'")
+    sh("cp '#{source_artifact}' '#{artifact}'")
   end
 
   lane :submit do
@@ -607,12 +771,14 @@ end
   await fs.writeFile(pluginfilePath, pluginfileContent, "utf8");
 }
 
-function buildInternalConfig(result: {
+async function buildInternalConfig(result: {
   detection: FeasProjectInfo;
   profile: string;
   projectId: string;
-}): Record<string, unknown> {
+}): Promise<InternalConfig> {
   const { detection, profile, projectId } = result;
+  const iosSettings = detection.platforms.ios ? await detectIosNativeSettings(detection.rootPath) : null;
+  const androidSettings = detection.platforms.android ? await detectAndroidNativeSettings(detection.rootPath) : null;
 
   return {
     schemaVersion: 1,
@@ -623,8 +789,9 @@ function buildInternalConfig(result: {
       ios: detection.platforms.ios
         ? {
             bundleIdentifier: detection.bundleIdentifiers.ios,
-            scheme: null,
-            workspacePath: null,
+            scheme: iosSettings?.scheme ?? null,
+            workspacePath: iosSettings?.workspacePath ?? null,
+            projectPath: iosSettings?.projectPath ?? null,
             exportMethod: "app-store",
             appleTeamId: null,
             appStoreConnectAppId: null,
@@ -633,7 +800,8 @@ function buildInternalConfig(result: {
       android: detection.platforms.android
         ? {
             applicationId: detection.bundleIdentifiers.android,
-            gradleTask: ":app:bundleRelease",
+            gradleTask: androidSettings?.gradleTask ?? ":app:bundleRelease",
+            artifactSourcePath: androidSettings?.artifactSourcePath ?? "android/app/build/outputs/bundle/release/app-release.aab",
             playPackageName: detection.bundleIdentifiers.android,
           }
         : null,
@@ -704,7 +872,8 @@ export async function initFeasProject(options: InitFeasProjectOptions): Promise<
 
   await writeJsonFile(globalConfigPath, nextGlobalConfig);
 
-  await writeJsonFile(internalConfigPath, buildInternalConfig({ detection, profile, projectId }));
+  const internalConfig = await buildInternalConfig({ detection, profile, projectId });
+  await writeJsonFile(internalConfigPath, internalConfig);
 
   await writeJsonFile(path.join(projectPath, "project.json"), {
     id: projectId,
@@ -774,6 +943,7 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
   if (!(await fileExists(internalConfigPath))) {
     throw new Error("Project is not initialized. Run `feas init` before running build.");
   }
+  const internalConfig = await readInternalConfig(internalConfigPath);
 
   if (!easConfig.build?.[profile]) {
     throw new Error(`Build profile '${profile}' not found in eas.json.`);
@@ -850,28 +1020,67 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
       );
     } else {
       logLines.push("[feas] mode: real");
-      const commandResult = await runCommand("fastlane", [platform, "build"], path.dirname(fastfilePath), {
-        FASTLANE_SKIP_UPDATE_CHECK: "1",
-        FASTLANE_FASTFILE_PATH: fastfilePath,
-        FEAS_ARTIFACT_PATH: artifactPath,
-        FEAS_PROJECT_ROOT: detection.rootPath,
-        FEAS_PROFILE: profile,
-      });
+      let platformEnv: Record<string, string> = {};
+      if (platform === "ios") {
+        const iosConfig = internalConfig.platforms.ios;
+        if (!iosConfig) {
+          status = "failed";
+          errorCode = "IOS_CONFIG_MISSING";
+          errorMessage = "Missing iOS configuration in internal.config.json. Re-run `feas init --force`.";
+        } else if (!iosConfig.scheme || (!iosConfig.workspacePath && !iosConfig.projectPath)) {
+          status = "failed";
+          errorCode = "IOS_NATIVE_CONFIG_INCOMPLETE";
+          errorMessage = "iOS scheme/workspace/project not detected. Set them in config and retry.";
+        } else {
+          const workspaceAbsolute = iosConfig.workspacePath ? path.join(detection.rootPath, iosConfig.workspacePath) : undefined;
+          const projectAbsolute = iosConfig.projectPath ? path.join(detection.rootPath, iosConfig.projectPath) : undefined;
+          platformEnv = {
+            FEAS_IOS_SCHEME: iosConfig.scheme,
+            FEAS_IOS_EXPORT_METHOD: iosConfig.exportMethod,
+            ...(workspaceAbsolute ? { FEAS_IOS_WORKSPACE: workspaceAbsolute } : {}),
+            ...(projectAbsolute ? { FEAS_IOS_PROJECT: projectAbsolute } : {}),
+          };
+        }
+      } else {
+        const androidConfig = internalConfig.platforms.android;
+        if (!androidConfig) {
+          status = "failed";
+          errorCode = "ANDROID_CONFIG_MISSING";
+          errorMessage = "Missing Android configuration in internal.config.json. Re-run `feas init --force`.";
+        } else {
+          platformEnv = {
+            FEAS_ANDROID_GRADLE_TASK: androidConfig.gradleTask,
+            FEAS_ANDROID_ARTIFACT_SOURCE: path.join(detection.rootPath, androidConfig.artifactSourcePath),
+          };
+        }
+      }
 
-      if (commandResult.stdout.trim().length > 0) {
+      let commandResult: CommandExecutionResult | null = null;
+      if (!errorCode) {
+        commandResult = await runCommand("fastlane", [platform, "build"], path.dirname(fastfilePath), {
+          FASTLANE_SKIP_UPDATE_CHECK: "1",
+          FASTLANE_FASTFILE_PATH: fastfilePath,
+          FEAS_ARTIFACT_PATH: artifactPath,
+          FEAS_PROJECT_ROOT: detection.rootPath,
+          FEAS_PROFILE: profile,
+          ...platformEnv,
+        });
+      }
+
+      if (commandResult && commandResult.stdout.trim().length > 0) {
         logLines.push("[feas] stdout:");
         logLines.push(commandResult.stdout.trimEnd());
       }
-      if (commandResult.stderr.trim().length > 0) {
+      if (commandResult && commandResult.stderr.trim().length > 0) {
         logLines.push("[feas] stderr:");
         logLines.push(commandResult.stderr.trimEnd());
       }
 
-      if (!commandResult.success) {
+      if (commandResult && !commandResult.success) {
         status = "failed";
         errorCode = "BUILD_COMMAND_FAILED";
         errorMessage = `Fastlane build command failed with exit code ${commandResult.exitCode}.`;
-      } else if (!(await fileExists(artifactPath))) {
+      } else if (!errorCode && !(await fileExists(artifactPath))) {
         status = "failed";
         errorCode = "BUILD_ARTIFACT_MISSING";
         errorMessage = `Build completed but artifact was not produced at ${artifactPath}.`;
