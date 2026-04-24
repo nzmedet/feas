@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type View = "overview" | "builds" | "releases" | "submissions" | "doctor" | "metadata" | "credentials" | "logs";
+type RunPlatform = "all" | "ios" | "android";
+type MetadataPlatform = "ios" | "android";
 
 type Project = {
   id: string;
@@ -64,7 +66,14 @@ function tokenFromUrl(): string {
 }
 
 function statusClass(status: string): string {
-  return status === "success" || status === "pass" ? "status-ok" : "status-bad";
+  return status === "success" || status === "pass" || status === "configured" ? "status-ok" : "status-bad";
+}
+
+function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return "Request failed";
 }
 
 async function apiGet<T>(path: string, token: string): Promise<T> {
@@ -75,6 +84,29 @@ async function apiGet<T>(path: string, token: string): Promise<T> {
   });
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function apiWrite<T>(
+  path: string,
+  token: string,
+  method: "POST" | "PUT",
+  body: Record<string, unknown> = {},
+): Promise<T> {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("token", token);
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      "content-type": "application/json",
+      "x-feas-token": token,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed: ${res.status}`);
   }
   return (await res.json()) as T;
 }
@@ -92,82 +124,202 @@ export function App() {
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [metadata, setMetadata] = useState<MetadataPayload>({});
   const [credentials, setCredentials] = useState<CredentialsPayload | null>(null);
+
+  const [selectedLogId, setSelectedLogId] = useState<string>("");
+  const [selectedMetadataFile, setSelectedMetadataFile] = useState<string>("");
+  const [metadataDraft, setMetadataDraft] = useState<string>("");
+
+  const [runPlatform, setRunPlatform] = useState<RunPlatform>("all");
+  const [runProfile, setRunProfile] = useState<string>("production");
+  const [runDryRun, setRunDryRun] = useState<boolean>(true);
+  const [skipSubmit, setSkipSubmit] = useState<boolean>(false);
+  const [metadataPlatform, setMetadataPlatform] = useState<MetadataPlatform>("ios");
+
   const [latestLogContent, setLatestLogContent] = useState<string>("No log selected.");
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const token = useMemo(() => tokenFromUrl(), []);
+  const metadataKeys = useMemo(() => Object.keys(metadata).sort(), [metadata]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const projectsPayload = await apiGet<{ projects: Project[] }>("/api/projects", token);
+      const current = projectsPayload.projects[0] ?? null;
+
+      if (!current) {
+        setProject(null);
+        setBuilds([]);
+        setReleases([]);
+        setSubmissions([]);
+        setDoctor([]);
+        setLogs([]);
+        setMetadata({});
+        setCredentials(null);
+        setLatestLogContent("No initialized FEAS projects found.");
+        return;
+      }
+
+      const [buildsPayload, releasesPayload, submissionsPayload, doctorPayload, logsPayload, metadataPayload, credentialsPayload] =
+        await Promise.all([
+          apiGet<{ builds: BuildRow[] }>(`/api/projects/${current.id}/builds`, token),
+          apiGet<{ releases: ReleaseRow[] }>(`/api/projects/${current.id}/releases`, token),
+          apiGet<{ submissions: SubmissionRow[] }>(`/api/projects/${current.id}/submissions`, token),
+          apiGet<{ checks: DoctorRow[] }>(`/api/projects/${current.id}/doctor`, token),
+          apiGet<{ logs: LogRow[] }>(`/api/projects/${current.id}/logs`, token),
+          apiGet<{ metadata: MetadataPayload }>(`/api/projects/${current.id}/metadata`, token),
+          apiGet<CredentialsPayload & { project: unknown }>(`/api/projects/${current.id}/credentials`, token),
+        ]);
+
+      setProject(current);
+      setBuilds(buildsPayload.builds ?? []);
+      setReleases(releasesPayload.releases ?? []);
+      setSubmissions(submissionsPayload.submissions ?? []);
+      setDoctor(doctorPayload.checks ?? []);
+      setLogs(logsPayload.logs ?? []);
+      setMetadata(metadataPayload.metadata ?? {});
+      setCredentials({
+        ios: credentialsPayload.ios,
+        android: credentialsPayload.android,
+      });
+
+      const preferredLogId = selectedLogId || logsPayload.logs[0]?.id;
+      if (preferredLogId) {
+        const logPayload = await apiGet<{ content: string }>(`/api/projects/${current.id}/logs/${encodeURIComponent(preferredLogId)}`, token);
+        setSelectedLogId(preferredLogId);
+        setLatestLogContent(logPayload.content || "No content");
+      } else {
+        setLatestLogContent("No logs found.");
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [token, selectedLogId]);
 
   useEffect(() => {
-    let canceled = false;
+    void load();
+  }, [load]);
 
-    async function load() {
-      try {
-        setLoading(true);
-        setError(null);
-
-        const projectsPayload = await apiGet<{ projects: Project[] }>("/api/projects", token);
-        const current = projectsPayload.projects[0] ?? null;
-        if (!current) {
-          if (!canceled) {
-            setProject(null);
-            setBuilds([]);
-            setReleases([]);
-            setSubmissions([]);
-            setDoctor([]);
-            setLogs([]);
-            setMetadata({});
-            setCredentials(null);
-            setLatestLogContent("No initialized FEAS projects found.");
-          }
-          return;
-        }
-
-        const [buildsPayload, releasesPayload, submissionsPayload, doctorPayload, logsPayload, metadataPayload, credentialsPayload] =
-          await Promise.all([
-            apiGet<{ builds: BuildRow[] }>(`/api/projects/${current.id}/builds`, token),
-            apiGet<{ releases: ReleaseRow[] }>(`/api/projects/${current.id}/releases`, token),
-            apiGet<{ submissions: SubmissionRow[] }>(`/api/projects/${current.id}/submissions`, token),
-            apiGet<{ checks: DoctorRow[] }>(`/api/projects/${current.id}/doctor`, token),
-            apiGet<{ logs: LogRow[] }>(`/api/projects/${current.id}/logs`, token),
-            apiGet<{ metadata: MetadataPayload }>(`/api/projects/${current.id}/metadata`, token),
-            apiGet<CredentialsPayload & { project: unknown }>(`/api/projects/${current.id}/credentials`, token),
-          ]);
-
-        let logContent = "No logs found.";
-        if (logsPayload.logs[0]) {
-          const latestLog = await apiGet<{ content: string }>(`/api/projects/${current.id}/logs/${encodeURIComponent(logsPayload.logs[0].id)}`, token);
-          logContent = latestLog.content || "No content";
-        }
-
-        if (!canceled) {
-          setProject(current);
-          setBuilds(buildsPayload.builds ?? []);
-          setReleases(releasesPayload.releases ?? []);
-          setSubmissions(submissionsPayload.submissions ?? []);
-          setDoctor(doctorPayload.checks ?? []);
-          setLogs(logsPayload.logs ?? []);
-          setMetadata(metadataPayload.metadata ?? {});
-          setCredentials({
-            ios: credentialsPayload.ios,
-            android: credentialsPayload.android,
-          });
-          setLatestLogContent(logContent);
-        }
-      } catch (err) {
-        if (!canceled) {
-          setError(err instanceof Error ? err.message : "Failed to load dashboard data");
-        }
-      } finally {
-        if (!canceled) {
-          setLoading(false);
-        }
-      }
+  useEffect(() => {
+    if (metadataKeys.length === 0) {
+      setSelectedMetadataFile("");
+      setMetadataDraft("");
+      return;
     }
 
-    void load();
-    return () => {
-      canceled = true;
-    };
-  }, [token]);
+    if (!selectedMetadataFile || !metadata[selectedMetadataFile]) {
+      const next = metadataKeys[0];
+      setSelectedMetadataFile(next);
+      setMetadataDraft(metadata[next]?.content ?? "");
+      return;
+    }
+
+    setMetadataDraft(metadata[selectedMetadataFile]?.content ?? "");
+  }, [metadata, metadataKeys, selectedMetadataFile]);
+
+  const runAction = useCallback(
+    async (label: string, action: () => Promise<void>) => {
+      setActionBusy(label);
+      setActionMessage(null);
+      try {
+        await action();
+        await load();
+        setActionMessage(`${label} completed.`);
+      } catch (err) {
+        setActionMessage(`${label} failed: ${toErrorMessage(err)}`);
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [load],
+  );
+
+  const handleRunDoctor = useCallback(async () => {
+    if (!project) {
+      return;
+    }
+    await runAction("Doctor", async () => {
+      await apiWrite(`/api/projects/${project.id}/doctor/run`, token, "POST", {
+        platform: runPlatform,
+        profile: runProfile || undefined,
+      });
+    });
+  }, [project, runAction, token, runPlatform, runProfile]);
+
+  const handleRunBuild = useCallback(async () => {
+    if (!project) {
+      return;
+    }
+    await runAction("Build", async () => {
+      await apiWrite(`/api/projects/${project.id}/builds`, token, "POST", {
+        platform: runPlatform,
+        profile: runProfile || undefined,
+        dryRun: runDryRun,
+      });
+    });
+  }, [project, runAction, token, runPlatform, runProfile, runDryRun]);
+
+  const handleRunRelease = useCallback(async () => {
+    if (!project) {
+      return;
+    }
+    await runAction("Release", async () => {
+      await apiWrite(`/api/projects/${project.id}/releases`, token, "POST", {
+        platform: runPlatform,
+        profile: runProfile || undefined,
+        dryRun: runDryRun,
+        skipSubmit,
+      });
+    });
+  }, [project, runAction, token, runPlatform, runProfile, runDryRun, skipSubmit]);
+
+  const handleMetadataAction = useCallback(
+    async (mode: "pull" | "push" | "validate") => {
+      if (!project) {
+        return;
+      }
+      await runAction(`Metadata ${mode}`, async () => {
+        await apiWrite(`/api/projects/${project.id}/metadata/${mode}`, token, "POST", {
+          platform: metadataPlatform,
+        });
+      });
+    },
+    [project, runAction, token, metadataPlatform],
+  );
+
+  const handleMetadataSave = useCallback(async () => {
+    if (!project || !selectedMetadataFile) {
+      return;
+    }
+    await runAction("Metadata save", async () => {
+      await apiWrite(`/api/projects/${project.id}/metadata`, token, "PUT", {
+        files: {
+          [selectedMetadataFile]: metadataDraft,
+        },
+      });
+    });
+  }, [project, selectedMetadataFile, metadataDraft, runAction, token]);
+
+  const handleLogSelect = useCallback(
+    async (logId: string) => {
+      if (!project || !logId) {
+        return;
+      }
+      setSelectedLogId(logId);
+      try {
+        const payload = await apiGet<{ content: string }>(`/api/projects/${project.id}/logs/${encodeURIComponent(logId)}`, token);
+        setLatestLogContent(payload.content || "No content");
+      } catch (err) {
+        setLatestLogContent(`Failed to load log: ${toErrorMessage(err)}`);
+      }
+    },
+    [project, token],
+  );
 
   const buildFailed = builds.filter((b) => b.status !== "success").length;
   const doctorFailed = doctor.filter((d) => d.status === "fail").length;
@@ -175,7 +327,11 @@ export function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand">FEAS Dashboard</div>
+        <div className="brand">FEAS</div>
+        <div className="section-title">Project</div>
+        <div className="project-pill">{project?.name ?? "No project"}</div>
+
+        <div className="section-title">Dashboard</div>
         <div className="menu">
           {([
             ["overview", "Overview"],
@@ -198,26 +354,100 @@ export function App() {
         <div className="top">
           <div>
             <div className="title">{view.charAt(0).toUpperCase() + view.slice(1)}</div>
-            <div className="muted">Local FEAS runtime</div>
+            <div className="muted">{project ? `${project.root ?? "unknown-root"}` : "No initialized project"}</div>
           </div>
-          <div className="muted">{project ? `${project.name} · ${project.root ?? "unknown-root"}` : "No project"}</div>
+          <button className="ghost" disabled={loading || !!actionBusy} onClick={() => void load()}>
+            Refresh
+          </button>
         </div>
 
-        {loading && <div className="panel"><h3>Loading</h3><div className="empty">Fetching dashboard data...</div></div>}
-        {error && <div className="panel"><h3>Error</h3><div className="empty">{error}</div></div>}
+        {!loading && !error && project && (
+          <div className="panel actions-panel">
+            <h3>Quick Actions</h3>
+            <div className="actions-grid">
+              <div className="control">
+                <label>Platform</label>
+                <select value={runPlatform} onChange={(e) => setRunPlatform(e.target.value as RunPlatform)}>
+                  <option value="all">all</option>
+                  <option value="ios">ios</option>
+                  <option value="android">android</option>
+                </select>
+              </div>
+              <div className="control">
+                <label>Profile</label>
+                <input value={runProfile} onChange={(e) => setRunProfile(e.target.value)} placeholder="production" />
+              </div>
+              <label className="toggle">
+                <input type="checkbox" checked={runDryRun} onChange={(e) => setRunDryRun(e.target.checked)} />
+                Dry run
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={skipSubmit} onChange={(e) => setSkipSubmit(e.target.checked)} />
+                Skip submit
+              </label>
+            </div>
+            <div className="button-row">
+              <button disabled={!!actionBusy} onClick={() => void handleRunDoctor()}>
+                {actionBusy === "Doctor" ? "Running doctor..." : "Run Doctor"}
+              </button>
+              <button disabled={!!actionBusy} onClick={() => void handleRunBuild()}>
+                {actionBusy === "Build" ? "Running build..." : "Run Build"}
+              </button>
+              <button disabled={!!actionBusy} onClick={() => void handleRunRelease()}>
+                {actionBusy === "Release" ? "Running release..." : "Run Release"}
+              </button>
+            </div>
+            {actionMessage && <div className="notice">{actionMessage}</div>}
+          </div>
+        )}
+
+        {loading && (
+          <div className="panel">
+            <h3>Loading</h3>
+            <div className="empty">Fetching dashboard data...</div>
+          </div>
+        )}
+
+        {error && (
+          <div className="panel">
+            <h3>Error</h3>
+            <div className="empty">{error}</div>
+          </div>
+        )}
 
         {!loading && !error && view === "overview" && (
           <>
             <div className="cards">
-              <div className="card"><div className="k">Builds</div><div className="v">{builds.length}</div></div>
-              <div className="card"><div className="k">Build Failures</div><div className="v">{buildFailed}</div></div>
-              <div className="card"><div className="k">Releases</div><div className="v">{releases.length}</div></div>
-              <div className="card"><div className="k">Doctor Fails</div><div className="v">{doctorFailed}</div></div>
+              <div className="card">
+                <div className="k">Builds</div>
+                <div className="v">{builds.length}</div>
+              </div>
+              <div className="card">
+                <div className="k">Build Failures</div>
+                <div className="v">{buildFailed}</div>
+              </div>
+              <div className="card">
+                <div className="k">Releases</div>
+                <div className="v">{releases.length}</div>
+              </div>
+              <div className="card">
+                <div className="k">Doctor Fails</div>
+                <div className="v">{doctorFailed}</div>
+              </div>
             </div>
+
             <div className="panel">
               <h3>Recent Builds</h3>
               <table>
-                <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Profile</th><th>Started</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Platform</th>
+                    <th>Status</th>
+                    <th>Profile</th>
+                    <th>Started</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {builds.slice(0, 8).map((row) => (
                     <tr key={row.id}>
@@ -238,7 +468,15 @@ export function App() {
           <div className="panel">
             <h3>Builds</h3>
             <table>
-              <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Profile</th><th>Error</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Profile</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
               <tbody>
                 {builds.map((row) => (
                   <tr key={row.id}>
@@ -258,7 +496,15 @@ export function App() {
           <div className="panel">
             <h3>Releases</h3>
             <table>
-              <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Profile</th><th>Error</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Profile</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
               <tbody>
                 {releases.map((row) => (
                   <tr key={row.id}>
@@ -278,7 +524,15 @@ export function App() {
           <div className="panel">
             <h3>Submissions</h3>
             <table>
-              <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Store</th><th>Error</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Store</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
               <tbody>
                 {submissions.map((row) => (
                   <tr key={row.id}>
@@ -298,7 +552,14 @@ export function App() {
           <div className="panel">
             <h3>Doctor Checks</h3>
             <table>
-              <thead><tr><th>Category</th><th>Name</th><th>Status</th><th>Message</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
               <tbody>
                 {doctor.map((row) => (
                   <tr key={row.id}>
@@ -314,19 +575,52 @@ export function App() {
         )}
 
         {!loading && !error && view === "metadata" && (
-          <div className="panel">
+          <div className="panel metadata-panel">
             <h3>Metadata</h3>
-            <table>
-              <thead><tr><th>File</th><th>Preview</th></tr></thead>
-              <tbody>
-                {Object.entries(metadata).map(([key, value]) => (
-                  <tr key={key}>
-                    <td>{key}</td>
-                    <td>{value.content.slice(0, 120)}</td>
-                  </tr>
+            <div className="button-row">
+              <select value={metadataPlatform} onChange={(e) => setMetadataPlatform(e.target.value as MetadataPlatform)}>
+                <option value="ios">ios</option>
+                <option value="android">android</option>
+              </select>
+              <button disabled={!!actionBusy} onClick={() => void handleMetadataAction("pull")}>
+                {actionBusy === "Metadata pull" ? "Pulling..." : "Pull"}
+              </button>
+              <button disabled={!!actionBusy} onClick={() => void handleMetadataAction("validate")}>
+                {actionBusy === "Metadata validate" ? "Validating..." : "Validate"}
+              </button>
+              <button disabled={!!actionBusy} onClick={() => void handleMetadataAction("push")}>
+                {actionBusy === "Metadata push" ? "Pushing..." : "Push"}
+              </button>
+              <button disabled={!!actionBusy || !selectedMetadataFile} onClick={() => void handleMetadataSave()}>
+                {actionBusy === "Metadata save" ? "Saving..." : "Save File"}
+              </button>
+            </div>
+            <div className="metadata-grid">
+              <div className="metadata-list">
+                {metadataKeys.length === 0 && <div className="empty">No metadata files found.</div>}
+                {metadataKeys.map((key) => (
+                  <button
+                    key={key}
+                    className={selectedMetadataFile === key ? "active" : ""}
+                    onClick={() => {
+                      setSelectedMetadataFile(key);
+                      setMetadataDraft(metadata[key]?.content ?? "");
+                    }}
+                  >
+                    {key}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+              <div className="metadata-editor">
+                <div className="muted">{selectedMetadataFile || "Select metadata file"}</div>
+                <textarea
+                  value={metadataDraft}
+                  onChange={(e) => setMetadataDraft(e.target.value)}
+                  placeholder="Metadata file content"
+                  disabled={!selectedMetadataFile}
+                />
+              </div>
+            </div>
           </div>
         )}
 
@@ -334,18 +628,24 @@ export function App() {
           <div className="panel">
             <h3>Credentials</h3>
             <table>
-              <thead><tr><th>Platform</th><th>Status</th><th>Missing</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Missing</th>
+                </tr>
+              </thead>
               <tbody>
                 <tr>
                   <td>iOS</td>
-                  <td className={credentials?.ios.configured ? "status-ok" : "status-bad"}>
+                  <td className={statusClass(credentials?.ios.configured ? "configured" : "missing")}>
                     {credentials?.ios.configured ? "configured" : "missing"}
                   </td>
                   <td>{credentials?.ios.missing.join(", ") ?? ""}</td>
                 </tr>
                 <tr>
                   <td>Android</td>
-                  <td className={credentials?.android.configured ? "status-ok" : "status-bad"}>
+                  <td className={statusClass(credentials?.android.configured ? "configured" : "missing")}>
                     {credentials?.android.configured ? "configured" : "missing"}
                   </td>
                   <td>{credentials?.android.missing.join(", ") ?? ""}</td>
@@ -356,9 +656,23 @@ export function App() {
         )}
 
         {!loading && !error && view === "logs" && (
-          <div className="panel">
-            <h3>Latest Log</h3>
-            {logs.length === 0 ? <div className="empty">No logs available</div> : <pre>{latestLogContent}</pre>}
+          <div className="panel logs-panel">
+            <h3>Logs</h3>
+            <div className="logs-grid">
+              <div className="logs-list">
+                {logs.map((log) => (
+                  <button
+                    key={log.id}
+                    className={selectedLogId === log.id ? "active" : ""}
+                    onClick={() => void handleLogSelect(log.id)}
+                  >
+                    <div>{log.id}</div>
+                    <div className="muted">{log.type}</div>
+                  </button>
+                ))}
+              </div>
+              <pre>{logs.length === 0 ? "No logs available" : latestLogContent}</pre>
+            </div>
           </div>
         )}
       </main>
