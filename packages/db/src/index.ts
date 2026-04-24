@@ -38,6 +38,21 @@ export interface BuildRecordInput {
   errorMessage?: string;
 }
 
+export interface SubmissionRecordInput {
+  id: string;
+  projectId: string;
+  buildId?: string;
+  platform: string;
+  store: string;
+  status: string;
+  remoteId?: string;
+  logPath?: string;
+  startedAt: Date;
+  finishedAt?: Date;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 const MIGRATION_PATHS = ["20260424163000_init/migration.sql"];
 
 function toSqliteDatasourceUrl(databasePath: string): string {
@@ -141,6 +156,21 @@ export async function createBuildRecord(input: { databasePath: string; build: Bu
   try {
     await prisma.build.create({
       data: input.build,
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function createSubmissionRecord(input: {
+  databasePath: string;
+  submission: SubmissionRecordInput;
+}): Promise<void> {
+  const prisma = createPrismaClient(input.databasePath);
+
+  try {
+    await prisma.submission.create({
+      data: input.submission,
     });
   } finally {
     await prisma.$disconnect();

@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createBuildRecord, ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
+import { createBuildRecord, createSubmissionRecord, ensureProjectDatabase, recordDoctorChecks } from "@feas/db";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -65,6 +65,39 @@ export interface RunBuildResult {
   profile: string;
   project: FeasProjectInfo;
   builds: BuildExecution[];
+}
+
+export type SubmitPlatform = "ios" | "android";
+
+export interface RunSubmitOptions {
+  cwd: string;
+  platform: SubmitPlatform;
+  path: string;
+  profile?: string;
+  dryRun?: boolean;
+}
+
+export interface SubmissionExecution {
+  id: string;
+  platform: SubmitPlatform;
+  profile: string;
+  status: "success" | "failed";
+  dryRun: boolean;
+  store: "app-store-connect" | "google-play";
+  artifactPath: string;
+  logPath: string;
+  command: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface RunSubmitResult {
+  profile: string;
+  project: FeasProjectInfo;
+  submission: SubmissionExecution;
 }
 
 export type DoctorPlatform = "all" | "ios" | "android";
@@ -366,6 +399,14 @@ function buildCommandForPlatform(platform: "ios" | "android"): string {
   return "fastlane android build";
 }
 
+function submitCommandForPlatform(platform: SubmitPlatform): string {
+  if (platform === "ios") {
+    return "fastlane ios submit";
+  }
+
+  return "fastlane android submit";
+}
+
 function buildInternalConfig(result: {
   detection: FeasProjectInfo;
   profile: string;
@@ -659,6 +700,117 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
     profile,
     project: detection,
     builds,
+  };
+}
+
+export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitResult> {
+  const profile = options.profile ?? "production";
+  const dryRun = options.dryRun ?? false;
+  const { detection, easConfig } = await detectProject(options.cwd);
+  const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
+
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before running submit.");
+  }
+
+  if (!detection.platforms[options.platform]) {
+    throw new Error(`Platform '${options.platform}' is not configured for this project.`);
+  }
+
+  const resolvedArtifactPath = path.resolve(options.cwd, options.path);
+  if (!(await fileExists(resolvedArtifactPath))) {
+    throw new Error(`Artifact not found at ${resolvedArtifactPath}.`);
+  }
+
+  const submitProfile = easConfig.submit?.[profile];
+  if (!submitProfile) {
+    throw new Error(`Submit profile '${profile}' not found in eas.json.`);
+  }
+
+  await ensureProjectDatabase({
+    databasePath,
+    project: {
+      id: projectId,
+      name: detection.displayName,
+      rootPath: detection.rootPath,
+    },
+  });
+
+  const startedAt = new Date();
+  const submissionId = randomUUID();
+  const timestamp = timestampForFileName(startedAt);
+  const command = submitCommandForPlatform(options.platform);
+  const logPath = path.join(projectPath, "logs", "submissions", `submission-${timestamp}-${options.platform}-${submissionId}.log`);
+  const store = options.platform === "ios" ? "app-store-connect" : "google-play";
+
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+
+  let status: SubmissionExecution["status"] = "success";
+  let errorCode: string | undefined;
+  let errorMessage: string | undefined;
+  const logLines: string[] = [];
+  logLines.push(`[feas] submission id: ${submissionId}`);
+  logLines.push(`[feas] platform: ${options.platform}`);
+  logLines.push(`[feas] profile: ${profile}`);
+  logLines.push(`[feas] store: ${store}`);
+  logLines.push(`[feas] artifactPath: ${resolvedArtifactPath}`);
+  logLines.push(`[feas] command: ${command}`);
+  logLines.push(`[feas] startedAt: ${startedAt.toISOString()}`);
+
+  if (dryRun) {
+    logLines.push("[feas] mode: dry-run");
+    logLines.push("[feas] submission execution skipped.");
+  } else {
+    status = "failed";
+    errorCode = "SUBMIT_NOT_IMPLEMENTED";
+    errorMessage = "Real store submission is not implemented yet. Re-run with --dry-run for preview mode.";
+    logLines.push("[feas] mode: real");
+    logLines.push(`[feas] errorCode: ${errorCode}`);
+    logLines.push(`[feas] errorMessage: ${errorMessage}`);
+  }
+
+  const finishedAt = new Date();
+  const durationMs = finishedAt.getTime() - startedAt.getTime();
+  logLines.push(`[feas] finishedAt: ${finishedAt.toISOString()}`);
+  logLines.push(`[feas] durationMs: ${durationMs}`);
+  logLines.push(`[feas] status: ${status}`);
+  await fs.writeFile(logPath, `${logLines.join("\n")}\n`, "utf8");
+
+  await createSubmissionRecord({
+    databasePath,
+    submission: {
+      id: submissionId,
+      projectId,
+      platform: options.platform,
+      store,
+      status,
+      logPath,
+      startedAt,
+      finishedAt,
+      errorCode,
+      errorMessage,
+    },
+  });
+
+  return {
+    profile,
+    project: detection,
+    submission: {
+      id: submissionId,
+      platform: options.platform,
+      profile,
+      status,
+      dryRun,
+      store,
+      artifactPath: resolvedArtifactPath,
+      logPath,
+      command,
+      startedAt: startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      durationMs,
+      errorCode,
+      errorMessage,
+    },
   };
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initFeasProject, resolveFeasConfig, runBuild, runDoctor } from "@feas/core";
+import { initFeasProject, resolveFeasConfig, runBuild, runDoctor, runSubmit } from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -102,6 +102,55 @@ program
     }
 
     if (hasFailures) {
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("submit")
+  .description("Submit existing binary")
+  .argument("<platform>", "Target platform: ios | android")
+  .requiredOption("--path <path>", "Path to artifact (.ipa or .aab)")
+  .option("--profile <profile>", "EAS profile to use", "production")
+  .option("--dry-run", "Preview submit without calling store APIs", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (platformArg, options) => {
+    if (platformArg !== "ios" && platformArg !== "android") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+
+    const result = await runSubmit({
+      cwd: process.cwd(),
+      platform: platformArg,
+      path: options.path,
+      profile: options.profile,
+      dryRun: options.dryRun,
+    });
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
+    const submission = result.submission;
+    const icon = submission.status === "success" ? "PASS" : "FAIL";
+
+    process.stdout.write(`Submit profile: ${result.profile}\n`);
+    process.stdout.write(`Project: ${result.project.displayName}\n`);
+    process.stdout.write(`Root: ${result.project.rootPath}\n`);
+    process.stdout.write("\n");
+    process.stdout.write(`[${icon}] ${submission.platform.toUpperCase()} submission ${submission.id}\n`);
+    process.stdout.write(`  Mode: ${submission.dryRun ? "dry-run" : "real"}\n`);
+    process.stdout.write(`  Store: ${submission.store}\n`);
+    process.stdout.write(`  Artifact: ${submission.artifactPath}\n`);
+    process.stdout.write(`  Log: ${submission.logPath}\n`);
+    process.stdout.write(`  Command: ${submission.command}\n`);
+    process.stdout.write(`  Duration: ${submission.durationMs}ms\n`);
+    if (submission.errorMessage) {
+      process.stdout.write(`  Error: ${submission.errorMessage}\n`);
+    }
+
+    if (submission.status === "failed") {
       process.exitCode = 1;
     }
   });
