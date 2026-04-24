@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { initFeasProject, resolveFeasConfig, runBuild, runDoctor, runRelease, runSubmit } from "@feas/core";
+import { promises as fs } from "node:fs";
+import { initFeasProject, listLogs, resolveFeasConfig, runBuild, runDoctor, runRelease, runSubmit } from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -206,6 +207,53 @@ program
 
     if (hasFailures) {
       process.exitCode = 1;
+    }
+  });
+
+program
+  .command("logs")
+  .description("Show logs")
+  .option("--latest", "Show latest log only", false)
+  .option("--id <id>", "Filter log entries by id substring")
+  .option("--raw", "Print raw log content", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (options) => {
+    const result = await listLogs({
+      cwd: process.cwd(),
+      latest: options.latest,
+      id: options.id,
+    });
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
+    process.stdout.write(`Project: ${result.project.displayName}\n`);
+    process.stdout.write(`Root: ${result.project.rootPath}\n`);
+    process.stdout.write(`Logs found: ${result.logs.length}\n`);
+    process.stdout.write("\n");
+
+    if (result.logs.length === 0) {
+      process.stdout.write("No logs found.\n");
+      return;
+    }
+
+    for (const log of result.logs) {
+      process.stdout.write(`[${log.type.toUpperCase()}] ${log.id}\n`);
+      process.stdout.write(`  File: ${log.filePath}\n`);
+      process.stdout.write(`  Created: ${log.createdAt}\n`);
+
+      if (options.raw) {
+        const rawContent = await fs.readFile(log.filePath, "utf8");
+        process.stdout.write("  Raw:\n");
+        for (const line of rawContent.split("\n")) {
+          if (line.length === 0) {
+            continue;
+          }
+          process.stdout.write(`    ${line}\n`);
+        }
+      }
     }
   });
 

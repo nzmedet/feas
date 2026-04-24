@@ -132,6 +132,25 @@ export interface RunReleaseResult {
   releases: ReleaseExecution[];
 }
 
+export interface ListLogsOptions {
+  cwd: string;
+  latest?: boolean;
+  id?: string;
+}
+
+export interface FeasLogEntry {
+  id: string;
+  type: "build" | "submission" | "release" | "doctor" | "metadata" | "credentials" | "unknown";
+  filePath: string;
+  createdAt: string;
+  content?: string;
+}
+
+export interface ListLogsResult {
+  project: FeasProjectInfo;
+  logs: FeasLogEntry[];
+}
+
 export type DoctorPlatform = "all" | "ios" | "android";
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -437,6 +456,29 @@ function submitCommandForPlatform(platform: SubmitPlatform): string {
   }
 
   return "fastlane android submit";
+}
+
+function inferLogType(fileName: string): FeasLogEntry["type"] {
+  if (fileName.startsWith("build-")) {
+    return "build";
+  }
+  if (fileName.startsWith("submission-")) {
+    return "submission";
+  }
+  if (fileName.startsWith("release-")) {
+    return "release";
+  }
+  if (fileName.startsWith("doctor-")) {
+    return "doctor";
+  }
+  if (fileName.startsWith("metadata-")) {
+    return "metadata";
+  }
+  if (fileName.startsWith("credentials-")) {
+    return "credentials";
+  }
+
+  return "unknown";
 }
 
 function buildInternalConfig(result: {
@@ -944,6 +986,65 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
     profile,
     project: detection,
     releases,
+  };
+}
+
+export async function listLogs(options: ListLogsOptions): Promise<ListLogsResult> {
+  const { detection } = await detectProject(options.cwd);
+  const { projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
+
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before reading logs.");
+  }
+
+  const logDirectories = [
+    path.join(projectPath, "logs", "builds"),
+    path.join(projectPath, "logs", "submissions"),
+    path.join(projectPath, "logs", "releases"),
+  ];
+
+  const files: Array<{ filePath: string; createdAtMs: number }> = [];
+
+  for (const directory of logDirectories) {
+    if (!(await fileExists(directory))) {
+      continue;
+    }
+
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const filePath = path.join(directory, entry.name);
+      const stat = await fs.stat(filePath);
+      files.push({ filePath, createdAtMs: stat.mtimeMs });
+    }
+  }
+
+  let filtered = files.sort((a, b) => b.createdAtMs - a.createdAtMs);
+
+  if (options.id) {
+    filtered = filtered.filter((file) => path.basename(file.filePath).includes(options.id as string));
+  }
+
+  if (options.latest) {
+    filtered = filtered.slice(0, 1);
+  }
+
+  const logs: FeasLogEntry[] = filtered.map((file) => {
+    const fileName = path.basename(file.filePath);
+    return {
+      id: fileName.replace(/\.log$/, ""),
+      type: inferLogType(fileName),
+      filePath: file.filePath,
+      createdAt: new Date(file.createdAtMs).toISOString(),
+    };
+  });
+
+  return {
+    project: detection,
+    logs,
   };
 }
 
