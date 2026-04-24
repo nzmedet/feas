@@ -5,7 +5,7 @@ Last updated: 2026-04-24
 ## Current Snapshot
 - Monorepo: `pnpm` workspace with services under `packages/`
 - Stack: TypeScript, Prisma/SQLite, Fastlane integration, local API, React dashboard
-- Latest commit: `0595444` (`feat(api,dashboard): support submit action from dashboard`)
+- Latest commit: use `git log --oneline -n 1`
 
 ## Checklist
 
@@ -52,10 +52,11 @@ Last updated: 2026-04-24
 ### Verification
 - [x] Monorepo `typecheck` passes
 - [x] Monorepo `build` passes
+- [x] CLI smoke test added (`node:test` over init/config/build/submit/release/metadata dry-run flow)
+- [x] GitHub Actions CI added (`typecheck` + `build` + smoke test)
 
 ## In Progress / Next
-- [ ] Add automated tests (unit + API integration + dashboard smoke)
-- [ ] Add CI workflow for `pnpm typecheck` + `pnpm build`
+- [ ] Expand automated tests (unit + API integration + dashboard smoke)
 - [ ] Improve dashboard action feedback (streaming/progress states)
 - [ ] Add richer release history drill-down and links between run artifacts
 - [ ] Harden credential UX (validation hints + safer path checks)
