@@ -4,9 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "echo \"Dashboard scaffold pending\"",
-    "dev": "echo \"Dashboard scaffold pending\"",
-    "typecheck": "echo \"Dashboard scaffold pending\"",
-    "lint": "echo \"Dashboard scaffold pending\""
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"No lints configured for @feas/dashboard yet\""
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.10"
   }
 }
