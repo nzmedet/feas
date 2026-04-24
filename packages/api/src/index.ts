@@ -7,6 +7,7 @@ import { getProjectBuilds, getProjectDoctorChecks, getProjectReleases } from "@f
 export interface StartLocalApiServerOptions {
   port: number;
   token: string;
+  dashboardDistPath?: string;
 }
 
 interface FeasGlobalConfig {
@@ -297,6 +298,7 @@ function dashboardHtml(port: number, token: string): string {
 export async function startLocalApiServer(options: StartLocalApiServerOptions): Promise<{ url: string }> {
   const app = createApiServer();
   const expectedToken = options.token;
+  const dashboardDistPath = options.dashboardDistPath;
   const feasHome = getFeasHomeDir();
   const globalConfigPath = path.join(feasHome, "config.json");
 
@@ -315,7 +317,41 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
   });
 
   app.get("/", async (_request, reply) => {
+    if (dashboardDistPath) {
+      const indexFile = path.join(dashboardDistPath, "index.html");
+      if (await fileExists(indexFile)) {
+        const html = await fs.readFile(indexFile, "utf8");
+        reply.type("text/html").send(html);
+        return;
+      }
+    }
+
     reply.type("text/html").send(dashboardHtml(options.port, expectedToken));
+  });
+
+  app.get("/assets/*", async (request, reply) => {
+    if (!dashboardDistPath) {
+      reply.code(404).send({ error: "asset_not_found" });
+      return;
+    }
+
+    const wildcard = (request.params as { "*": string })["*"] ?? "";
+    const fullPath = path.join(dashboardDistPath, "assets", wildcard);
+    if (!(await fileExists(fullPath))) {
+      reply.code(404).send({ error: "asset_not_found" });
+      return;
+    }
+
+    const buffer = await fs.readFile(fullPath);
+    if (fullPath.endsWith(".js")) {
+      reply.type("text/javascript").send(buffer);
+      return;
+    }
+    if (fullPath.endsWith(".css")) {
+      reply.type("text/css").send(buffer);
+      return;
+    }
+    reply.send(buffer);
   });
 
   app.get("/api/projects", async () => {

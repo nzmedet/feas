@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { startLocalApiServer } from "@feas/api";
 import {
   cleanProject,
@@ -285,9 +287,11 @@ program
     }
 
     const token = randomBytes(16).toString("hex");
+    const dashboardDistPath = path.resolve(fileURLToPath(new URL("../../dashboard/dist", import.meta.url)));
     const server = await startLocalApiServer({
       port: parsedPort,
       token,
+      dashboardDistPath,
     });
 
     process.stdout.write(`FEAS local API started on 127.0.0.1:${parsedPort}\n`);
