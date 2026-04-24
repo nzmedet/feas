@@ -17,6 +17,9 @@ importers:
 
   packages/api:
     dependencies:
+      '@feas/core':
+        specifier: workspace:*
+        version: link:../core
       '@feas/db':
         specifier: workspace:*
         version: link:../db

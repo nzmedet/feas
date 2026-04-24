@@ -293,3 +293,85 @@ export async function getProjectDoctorChecks(databasePath: string, limit = 100):
     await prisma.$disconnect();
   }
 }
+
+export async function getBuildById(databasePath: string, id: string): Promise<ProjectSummaryRow | null> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const row = await prisma.build.findUnique({ where: { id } });
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id,
+      status: row.status,
+      platform: row.platform,
+      profile: row.profile,
+      startedAt: row.startedAt.toISOString(),
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      artifactPath: row.artifactPath,
+      logPath: row.logPath,
+      errorMessage: row.errorMessage,
+    };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function getReleaseById(databasePath: string, id: string): Promise<ProjectSummaryRow | null> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const row = await prisma.release.findUnique({ where: { id } });
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id,
+      status: row.status,
+      platform: row.platform,
+      profile: row.profile,
+      startedAt: row.startedAt.toISOString(),
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      artifactPath: null,
+      logPath: null,
+      errorMessage: row.errorMessage,
+    };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function getProjectSubmissions(
+  databasePath: string,
+  limit = 50,
+): Promise<
+  Array<{
+    id: string;
+    platform: string;
+    status: string;
+    store: string;
+    startedAt: string;
+    finishedAt: string | null;
+    logPath: string | null;
+    errorMessage: string | null;
+  }>
+> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const rows = await prisma.submission.findMany({
+      orderBy: { startedAt: "desc" },
+      take: limit,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      platform: row.platform,
+      status: row.status,
+      store: row.store,
+      startedAt: row.startedAt.toISOString(),
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      logPath: row.logPath,
+      errorMessage: row.errorMessage,
+    }));
+  } finally {
+    await prisma.$disconnect();
+  }
+}

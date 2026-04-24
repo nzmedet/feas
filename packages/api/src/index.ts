@@ -2,7 +2,23 @@ import Fastify from "fastify";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getProjectBuilds, getProjectDoctorChecks, getProjectReleases } from "@feas/db";
+import {
+  configureAndroidCredentials,
+  configureIosCredentials,
+  runDoctor,
+  runMetadataPull,
+  runMetadataPush,
+  runMetadataValidate,
+  validateCredentials,
+} from "@feas/core";
+import {
+  getBuildById,
+  getProjectBuilds,
+  getProjectDoctorChecks,
+  getProjectReleases,
+  getProjectSubmissions,
+  getReleaseById,
+} from "@feas/db";
 
 export interface StartLocalApiServerOptions {
   port: number;
@@ -27,6 +43,7 @@ interface ProjectPaths {
   configFilePath: string;
   databasePath: string;
   logsRoot: string;
+  metadataRoot: string;
 }
 
 function getFeasHomeDir(): string {
@@ -70,7 +87,43 @@ function getProjectPaths(feasHome: string, projectId: string): ProjectPaths {
     configFilePath: path.join(root, "internal.config.json"),
     databasePath: path.join(root, "database.sqlite"),
     logsRoot: path.join(root, "logs"),
+    metadataRoot: path.join(root, "metadata"),
   };
+}
+
+async function readProjectRootFromProjectFile(paths: ProjectPaths): Promise<string | null> {
+  if (!(await fileExists(paths.projectFilePath))) {
+    return null;
+  }
+  const project = await readJsonFile<{ rootPath?: string }>(paths.projectFilePath);
+  return project.rootPath ?? null;
+}
+
+async function readMetadataTree(metadataRoot: string): Promise<Record<string, { path: string; content: string }>> {
+  const platforms: Array<"ios" | "android"> = ["ios", "android"];
+  const locales = ["en-NZ"];
+  const result: Record<string, { path: string; content: string }> = {};
+
+  for (const platform of platforms) {
+    for (const locale of locales) {
+      const localeRoot = path.join(metadataRoot, platform, locale);
+      if (!(await fileExists(localeRoot))) {
+        continue;
+      }
+      const entries = await fs.readdir(localeRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) {
+          continue;
+        }
+        const filePath = path.join(localeRoot, entry.name);
+        const content = await fs.readFile(filePath, "utf8");
+        const key = `${platform}/${locale}/${entry.name}`;
+        result[key] = { path: filePath, content };
+      }
+    }
+  }
+
+  return result;
 }
 
 async function listLogFiles(logsRoot: string): Promise<Array<{ id: string; type: string; path: string; createdAt: string }>> {
@@ -403,6 +456,26 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     return { builds };
   });
 
+  app.get("/api/projects/:id/builds/:buildId", async (request, reply) => {
+    const params = request.params as { id: string; buildId: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+
+    const build = await getBuildById(paths.databasePath, params.buildId);
+    if (!build) {
+      reply.code(404).send({ error: "build_not_found" });
+      return;
+    }
+    return build;
+  });
+
+  app.post("/api/projects/:id/builds", async (_request, reply) => {
+    reply.code(501).send({ error: "not_implemented", message: "Use CLI `feas build` for now." });
+  });
+
   app.get("/api/projects/:id/releases", async (request, reply) => {
     const params = request.params as { id: string };
     const paths = getProjectPaths(feasHome, params.id);
@@ -414,6 +487,37 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     return { releases };
   });
 
+  app.get("/api/projects/:id/releases/:releaseId", async (request, reply) => {
+    const params = request.params as { id: string; releaseId: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+
+    const release = await getReleaseById(paths.databasePath, params.releaseId);
+    if (!release) {
+      reply.code(404).send({ error: "release_not_found" });
+      return;
+    }
+    return release;
+  });
+
+  app.post("/api/projects/:id/releases", async (_request, reply) => {
+    reply.code(501).send({ error: "not_implemented", message: "Use CLI `feas release` for now." });
+  });
+
+  app.get("/api/projects/:id/submissions", async (request, reply) => {
+    const params = request.params as { id: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+    const submissions = await getProjectSubmissions(paths.databasePath);
+    return { submissions };
+  });
+
   app.get("/api/projects/:id/doctor", async (request, reply) => {
     const params = request.params as { id: string };
     const paths = getProjectPaths(feasHome, params.id);
@@ -423,6 +527,143 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     }
     const checks = await getProjectDoctorChecks(paths.databasePath);
     return { checks };
+  });
+
+  app.post("/api/projects/:id/doctor/run", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android" | "all"; profile?: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    const result = await runDoctor({
+      cwd: projectRoot,
+      platform: body.platform ?? "all",
+      profile: body.profile,
+    });
+    return result;
+  });
+
+  app.get("/api/projects/:id/metadata", async (request, reply) => {
+    const params = request.params as { id: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.root))) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    const metadata = await readMetadataTree(paths.metadataRoot);
+    return { metadata };
+  });
+
+  app.put("/api/projects/:id/metadata", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { files?: Record<string, string> };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.root))) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    const files = body.files ?? {};
+    for (const [relative, content] of Object.entries(files)) {
+      const filePath = path.join(paths.metadataRoot, relative);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, content, "utf8");
+    }
+    return { updated: Object.keys(files).length };
+  });
+
+  app.post("/api/projects/:id/metadata/pull", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android" };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    const result = await runMetadataPull({
+      cwd: projectRoot,
+      platform: body.platform ?? "ios",
+    });
+    return result;
+  });
+
+  app.post("/api/projects/:id/metadata/push", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android" };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    const result = await runMetadataPush({
+      cwd: projectRoot,
+      platform: body.platform ?? "ios",
+    });
+    return result;
+  });
+
+  app.post("/api/projects/:id/metadata/validate", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android" };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    const result = await runMetadataValidate({
+      cwd: projectRoot,
+      platform: body.platform ?? "ios",
+    });
+    return result;
+  });
+
+  app.get("/api/projects/:id/credentials", async (request, reply) => {
+    const params = request.params as { id: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    return validateCredentials({ cwd: projectRoot });
+  });
+
+  app.post("/api/projects/:id/credentials/ios", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { keyId?: string; issuerId?: string; privateKeyPath?: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    return configureIosCredentials({
+      cwd: projectRoot,
+      keyId: body.keyId,
+      issuerId: body.issuerId,
+      privateKeyPath: body.privateKeyPath,
+    });
+  });
+
+  app.post("/api/projects/:id/credentials/android", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as { serviceAccountPath?: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+    return configureAndroidCredentials({
+      cwd: projectRoot,
+      serviceAccountPath: body.serviceAccountPath,
+    });
   });
 
   app.get("/api/projects/:id/logs", async (request, reply) => {
@@ -453,6 +694,25 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
 
     const content = await fs.readFile(match.path, "utf8");
     return { ...match, content };
+  });
+
+  app.get("/api/projects/:id/logs/:logId/stream", async (request, reply) => {
+    const params = request.params as { id: string; logId: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.root))) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    const logs = await listLogFiles(paths.logsRoot);
+    const match = logs.find((log) => log.id === params.logId);
+    if (!match) {
+      reply.code(404).send({ error: "log_not_found" });
+      return;
+    }
+
+    const content = await fs.readFile(match.path, "utf8");
+    reply.type("text/plain").send(content);
   });
 
   await app.listen({
