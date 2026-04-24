@@ -85,6 +85,7 @@ program
   .argument("<platform>", "Target platform: ios | android | all")
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--dry-run", "Preview build without executing native build tools", false)
+  .option("--prebuild", "Allow FEAS to run Expo prebuild when native folders are missing", false)
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
     if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
@@ -96,6 +97,7 @@ program
       platform: platformArg,
       profile: options.profile,
       dryRun: options.dryRun,
+      allowPrebuild: options.prebuild,
     });
 
     if (options.json) {
@@ -186,6 +188,8 @@ program
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--dry-run", "Preview release without executing native build/store APIs", false)
   .option("--skip-submit", "Skip submit step", false)
+  .option("--no-bump", "Do not bump build numbers/versionCode", false)
+  .option("--prebuild", "Allow FEAS to run Expo prebuild when native folders are missing", false)
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
     if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
@@ -198,6 +202,8 @@ program
       profile: options.profile,
       dryRun: options.dryRun,
       skipSubmit: options.skipSubmit,
+      noBump: options.noBump,
+      allowPrebuild: options.prebuild,
     });
 
     if (options.json) {
@@ -219,6 +225,9 @@ program
       }
       if (release.submissionId) {
         process.stdout.write(`  Submission: ${release.submissionId}\n`);
+      }
+      if (release.version || release.buildNumber) {
+        process.stdout.write(`  Version: ${release.version ?? "unknown"} (${release.buildNumber ?? "unknown"})\n`);
       }
       if (release.errorMessage) {
         process.stdout.write(`  Error: ${release.errorMessage}\n`);
@@ -308,29 +317,63 @@ const metadata = program.command("metadata").description("Manage local and remot
 metadata
   .command("pull")
   .argument("<platform>", "ios | android")
-  .action(async (platformArg) => {
+  .option("--real", "Pull remote store metadata with Fastlane credentials", false)
+  .action(async (platformArg, options) => {
     if (platformArg !== "ios" && platformArg !== "android") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
-    const result = await runMetadataPull({
-      cwd: process.cwd(),
-      platform: platformArg,
-    });
-    process.stdout.write(`Metadata pulled for ${result.platform} into ${result.metadataRoot}\n`);
+    const previous = process.env.FEAS_METADATA_REAL;
+    if (options.real) {
+      process.env.FEAS_METADATA_REAL = "1";
+    }
+    let result;
+    try {
+      result = await runMetadataPull({
+        cwd: process.cwd(),
+        platform: platformArg,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FEAS_METADATA_REAL;
+      } else {
+        process.env.FEAS_METADATA_REAL = previous;
+      }
+    }
+    process.stdout.write(`Metadata pulled for ${result.platform} into ${result.metadataRoot} (${result.mode ?? "local"})\n`);
+    if (result.logPath) {
+      process.stdout.write(`Log: ${result.logPath}\n`);
+    }
   });
 
 metadata
   .command("push")
   .argument("<platform>", "ios | android")
-  .action(async (platformArg) => {
+  .option("--real", "Push local metadata to the store with Fastlane credentials", false)
+  .action(async (platformArg, options) => {
     if (platformArg !== "ios" && platformArg !== "android") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
-    const result = await runMetadataPush({
-      cwd: process.cwd(),
-      platform: platformArg,
-    });
-    process.stdout.write(`Metadata push validated for ${result.platform}. Files: ${result.files.length}\n`);
+    const previous = process.env.FEAS_METADATA_REAL;
+    if (options.real) {
+      process.env.FEAS_METADATA_REAL = "1";
+    }
+    let result;
+    try {
+      result = await runMetadataPush({
+        cwd: process.cwd(),
+        platform: platformArg,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FEAS_METADATA_REAL;
+      } else {
+        process.env.FEAS_METADATA_REAL = previous;
+      }
+    }
+    process.stdout.write(`Metadata push ${result.mode === "real" ? "completed" : "validated"} for ${result.platform}. Files: ${result.files.length}\n`);
+    if (result.logPath) {
+      process.stdout.write(`Log: ${result.logPath}\n`);
+    }
   });
 
 metadata

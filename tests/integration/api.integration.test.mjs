@@ -165,6 +165,20 @@ test("api integration: auth + core endpoints", async () => {
     const logDetailRes = await requestJson(baseUrl, token, `/api/projects/${projectId}/logs/${encodeURIComponent(firstLogId)}`);
     assert.equal(logDetailRes.status, 200);
     assert.equal(typeof logDetailRes.payload.content, "string");
+
+    const badMetadataWrite = await requestJson(baseUrl, token, `/api/projects/${projectId}/metadata`, {
+      method: "PUT",
+      body: JSON.stringify({ files: { "../../../../escape.txt": "owned" } }),
+    });
+    assert.equal(badMetadataWrite.status, 400);
+    assert.equal(badMetadataWrite.payload.error, "invalid_metadata_path");
+
+    const goodMetadataWrite = await requestJson(baseUrl, token, `/api/projects/${projectId}/metadata`, {
+      method: "PUT",
+      body: JSON.stringify({ files: { "ios/en-NZ/name.txt": "API Integration App" } }),
+    });
+    assert.equal(goodMetadataWrite.status, 200);
+    assert.equal(goodMetadataWrite.payload.updated, 1);
   } finally {
     if (server) {
       await server.close();

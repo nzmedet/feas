@@ -54,6 +54,8 @@ Run inside your Expo/React Native app repository (must contain `package.json` an
 node packages/cli/dist/index.js init
 ```
 
+FEAS reads `app.json`, simple static `app.config.ts`, and simple static `app.config.js` values. It detects Expo, React Native, or hybrid projects from dependencies and config files.
+
 Optional environment variable:
 - `FEAS_HOME`: override local FEAS state directory (default: `~/.feas`)
 
@@ -68,10 +70,19 @@ node packages/cli/dist/index.js build all --dry-run --json
 node packages/cli/dist/index.js submit ios --path dist/app.ipa --dry-run --json
 node packages/cli/dist/index.js release ios --dry-run --skip-submit --json
 
+# Expo CNG / managed projects
+# FEAS will not regenerate ios/ or android/ unless this flag is explicit.
+node packages/cli/dist/index.js build ios --profile production --prebuild
+node packages/cli/dist/index.js release ios --profile production --prebuild
+
 # metadata
 node packages/cli/dist/index.js metadata pull ios
 node packages/cli/dist/index.js metadata validate ios
 node packages/cli/dist/index.js metadata push ios
+
+# real store metadata sync after credentials are configured
+node packages/cli/dist/index.js metadata pull ios --real
+node packages/cli/dist/index.js metadata push ios --real
 
 # credentials
 node packages/cli/dist/index.js credentials ios --key-id <KEY_ID> --issuer-id <ISSUER_ID> --private-key-path <PATH_TO_P8>
@@ -94,7 +105,9 @@ You will get a URL with a token query parameter (required for API calls), for ex
 
 Dashboard supports:
 - Overview/builds/releases/submissions/doctor/metadata/credentials/logs views
+- Initializing FEAS by entering an existing mobile project path
 - Quick actions for doctor/build/submit/release
+- Explicit `Allow Expo prebuild` control for CNG projects without native folders
 - Metadata pull/validate/push and file editing
 - Credentials configuration forms for iOS/Android
 
@@ -116,5 +129,7 @@ pnpm test
 
 ## Notes and Limitations
 - Dry-run flows are the safest way to verify setup quickly.
+- Real releases require the selected `eas.json` build profile, usually `build.production`; FEAS stops if it is missing.
+- FEAS does not run Expo prebuild automatically. Use `--prebuild` or the dashboard checkbox only when regenerating native folders is acceptable.
 - Real store submission and native build behavior depends on your local machine/toolchain and credential correctness.
 - Metadata reading currently focuses on locale path `en-NZ`.

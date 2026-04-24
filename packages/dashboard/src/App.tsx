@@ -18,6 +18,9 @@ type BuildRow = {
   platform: string;
   profile: string;
   startedAt: string;
+  finishedAt?: string | null;
+  artifactPath?: string | null;
+  logPath?: string | null;
   errorMessage?: string | null;
 };
 
@@ -27,6 +30,9 @@ type ReleaseRow = {
   platform: string;
   profile: string;
   startedAt: string;
+  finishedAt?: string | null;
+  buildNumber?: string | null;
+  version?: string | null;
   errorMessage?: string | null;
 };
 
@@ -36,6 +42,8 @@ type SubmissionRow = {
   status: string;
   store: string;
   startedAt: string;
+  finishedAt?: string | null;
+  logPath?: string | null;
   errorMessage?: string | null;
 };
 
@@ -67,7 +75,21 @@ function tokenFromUrl(): string {
 }
 
 function statusClass(status: string): string {
-  return status === "success" || status === "pass" || status === "configured" ? "status-ok" : "status-bad";
+  if (status === "success" || status === "pass" || status === "configured") {
+    return "status-ok";
+  }
+  if (status === "warn" || status === "skip") {
+    return "status-warn";
+  }
+  return "status-bad";
+}
+
+function shortPath(value?: string | null): string {
+  if (!value) {
+    return "";
+  }
+  const parts = value.split("/");
+  return parts.slice(-3).join("/");
 }
 
 function toErrorMessage(err: unknown): string {
@@ -134,6 +156,9 @@ export function App() {
   const [runProfile, setRunProfile] = useState<string>("production");
   const [runDryRun, setRunDryRun] = useState<boolean>(true);
   const [skipSubmit, setSkipSubmit] = useState<boolean>(false);
+  const [allowPrebuild, setAllowPrebuild] = useState<boolean>(false);
+  const [projectPathInput, setProjectPathInput] = useState<string>("");
+  const [initProfile, setInitProfile] = useState<string>("production");
   const [metadataPlatform, setMetadataPlatform] = useState<MetadataPlatform>("ios");
   const [submitPlatform, setSubmitPlatform] = useState<SubmitPlatform>("ios");
   const [submitPath, setSubmitPath] = useState<string>("");
@@ -267,9 +292,10 @@ export function App() {
         platform: runPlatform,
         profile: runProfile || undefined,
         dryRun: runDryRun,
+        allowPrebuild,
       });
     });
-  }, [project, runAction, token, runPlatform, runProfile, runDryRun]);
+  }, [project, runAction, token, runPlatform, runProfile, runDryRun, allowPrebuild]);
 
   const handleRunRelease = useCallback(async () => {
     if (!project) {
@@ -281,9 +307,22 @@ export function App() {
         profile: runProfile || undefined,
         dryRun: runDryRun,
         skipSubmit,
+        allowPrebuild,
       });
     });
-  }, [project, runAction, token, runPlatform, runProfile, runDryRun, skipSubmit]);
+  }, [project, runAction, token, runPlatform, runProfile, runDryRun, skipSubmit, allowPrebuild]);
+
+  const handleInitializeProject = useCallback(async () => {
+    if (!projectPathInput.trim()) {
+      return;
+    }
+    await runAction("Initialize project", async () => {
+      await apiWrite("/api/projects", token, "POST", {
+        rootPath: projectPathInput.trim(),
+        profile: initProfile || undefined,
+      });
+    });
+  }, [projectPathInput, initProfile, runAction, token]);
 
   const handleRunSubmit = useCallback(async () => {
     if (!project || !submitPath.trim()) {
@@ -430,6 +469,10 @@ export function App() {
                 <input type="checkbox" checked={skipSubmit} onChange={(e) => setSkipSubmit(e.target.checked)} />
                 Skip submit
               </label>
+              <label className="toggle">
+                <input type="checkbox" checked={allowPrebuild} onChange={(e) => setAllowPrebuild(e.target.checked)} />
+                Allow Expo prebuild
+              </label>
             </div>
             <div className="submit-grid">
               <div className="control">
@@ -463,6 +506,34 @@ export function App() {
               </button>
             </div>
             {actionMessage && <div className="notice">{actionMessage}</div>}
+          </div>
+        )}
+
+        {!loading && !error && !project && (
+          <div className="panel actions-panel">
+            <h3>Initialize Project</h3>
+            <div className="submit-grid">
+              <div className="control">
+                <label>Profile</label>
+                <input value={initProfile} onChange={(e) => setInitProfile(e.target.value)} placeholder="production" />
+              </div>
+              <div className="control">
+                <label>Mobile project path</label>
+                <input
+                  value={projectPathInput}
+                  onChange={(e) => setProjectPathInput(e.target.value)}
+                  placeholder="/absolute/path/to/expo-or-react-native-app"
+                />
+              </div>
+            </div>
+            <div className="button-row">
+              <button disabled={!!actionBusy || !projectPathInput.trim()} onClick={() => void handleInitializeProject()}>
+                {actionBusy === "Initialize project" ? "Initializing..." : "Initialize"}
+              </button>
+            </div>
+            <div className="notice">
+              FEAS will inspect the project only. It will not regenerate iOS/Android folders unless you explicitly enable prebuild for a build or release.
+            </div>
           </div>
         )}
 
@@ -508,10 +579,11 @@ export function App() {
                   <tr>
                     <th>ID</th>
                     <th>Platform</th>
-                    <th>Status</th>
-                    <th>Profile</th>
-                    <th>Started</th>
-                  </tr>
+                  <th>Status</th>
+                  <th>Profile</th>
+                  <th>Artifact</th>
+                  <th>Started</th>
+                </tr>
                 </thead>
                 <tbody>
                   {builds.slice(0, 8).map((row) => (
@@ -520,6 +592,7 @@ export function App() {
                       <td>{row.platform}</td>
                       <td className={statusClass(row.status)}>{row.status}</td>
                       <td>{row.profile}</td>
+                      <td title={row.artifactPath ?? ""}>{shortPath(row.artifactPath)}</td>
                       <td>{row.startedAt}</td>
                     </tr>
                   ))}
@@ -539,6 +612,8 @@ export function App() {
                   <th>Platform</th>
                   <th>Status</th>
                   <th>Profile</th>
+                  <th>Artifact</th>
+                  <th>Log</th>
                   <th>Error</th>
                 </tr>
               </thead>
@@ -549,6 +624,8 @@ export function App() {
                     <td>{row.platform}</td>
                     <td className={statusClass(row.status)}>{row.status}</td>
                     <td>{row.profile}</td>
+                    <td title={row.artifactPath ?? ""}>{shortPath(row.artifactPath)}</td>
+                    <td title={row.logPath ?? ""}>{shortPath(row.logPath)}</td>
                     <td>{row.errorMessage ?? ""}</td>
                   </tr>
                 ))}
@@ -567,6 +644,7 @@ export function App() {
                   <th>Platform</th>
                   <th>Status</th>
                   <th>Profile</th>
+                  <th>Version</th>
                   <th>Error</th>
                 </tr>
               </thead>
@@ -577,6 +655,7 @@ export function App() {
                     <td>{row.platform}</td>
                     <td className={statusClass(row.status)}>{row.status}</td>
                     <td>{row.profile}</td>
+                    <td>{row.version ?? row.buildNumber ?? ""}</td>
                     <td>{row.errorMessage ?? ""}</td>
                   </tr>
                 ))}
@@ -595,6 +674,7 @@ export function App() {
                   <th>Platform</th>
                   <th>Status</th>
                   <th>Store</th>
+                  <th>Log</th>
                   <th>Error</th>
                 </tr>
               </thead>
@@ -605,6 +685,7 @@ export function App() {
                     <td>{row.platform}</td>
                     <td className={statusClass(row.status)}>{row.status}</td>
                     <td>{row.store}</td>
+                    <td title={row.logPath ?? ""}>{shortPath(row.logPath)}</td>
                     <td>{row.errorMessage ?? ""}</td>
                   </tr>
                 ))}

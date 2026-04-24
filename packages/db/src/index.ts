@@ -74,6 +74,8 @@ export interface ProjectSummaryRow {
   status: string;
   platform: string;
   profile?: string | null;
+  version?: string | null;
+  buildNumber?: string | null;
   startedAt: string;
   finishedAt?: string | null;
   artifactPath?: string | null;
@@ -229,6 +231,8 @@ export async function getProjectBuilds(databasePath: string, limit = 50): Promis
       status: row.status,
       platform: row.platform,
       profile: row.profile,
+      version: row.version,
+      buildNumber: row.buildNumber,
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       artifactPath: row.artifactPath,
@@ -252,6 +256,8 @@ export async function getProjectReleases(databasePath: string, limit = 50): Prom
       status: row.status,
       platform: row.platform,
       profile: row.profile,
+      version: row.version,
+      buildNumber: row.buildNumber,
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       artifactPath: null,
@@ -306,6 +312,8 @@ export async function getBuildById(databasePath: string, id: string): Promise<Pr
       status: row.status,
       platform: row.platform,
       profile: row.profile,
+      version: row.version,
+      buildNumber: row.buildNumber,
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       artifactPath: row.artifactPath,
@@ -329,6 +337,8 @@ export async function getReleaseById(databasePath: string, id: string): Promise<
       status: row.status,
       platform: row.platform,
       profile: row.profile,
+      version: row.version,
+      buildNumber: row.buildNumber,
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       artifactPath: null,

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -18,6 +18,12 @@ export interface FeasProjectInfo {
   displayName: string;
   easJsonPath: string;
   expoConfigPath: string | null;
+  projectType: "expo" | "react-native" | "hybrid" | "unknown";
+  configSources: string[];
+  nativeFolders: {
+    ios: boolean;
+    android: boolean;
+  };
   platforms: {
     ios: boolean;
     android: boolean;
@@ -49,6 +55,7 @@ export interface RunBuildOptions {
   profile?: string;
   dryRun?: boolean;
   verbose?: boolean;
+  allowPrebuild?: boolean;
 }
 
 export interface BuildExecution {
@@ -63,6 +70,8 @@ export interface BuildExecution {
   startedAt: string;
   finishedAt: string;
   durationMs: number;
+  version?: string;
+  buildNumber?: string;
   errorCode?: string;
   errorMessage?: string;
 }
@@ -112,6 +121,8 @@ export interface RunReleaseOptions {
   profile?: string;
   dryRun?: boolean;
   skipSubmit?: boolean;
+  noBump?: boolean;
+  allowPrebuild?: boolean;
 }
 
 export interface ReleaseExecution {
@@ -123,6 +134,9 @@ export interface ReleaseExecution {
   submissionId?: string;
   startedAt: string;
   finishedAt: string;
+  version?: string;
+  buildNumber?: string;
+  changedFiles?: string[];
   errorMessage?: string;
 }
 
@@ -156,6 +170,8 @@ export interface MetadataOperationResult {
   platform: "ios" | "android";
   metadataRoot: string;
   files: string[];
+  mode?: "local" | "real";
+  logPath?: string;
 }
 
 export interface MetadataValidationResult extends MetadataOperationResult {
@@ -204,7 +220,7 @@ export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
 
 export interface DoctorCheck {
   id: string;
-  category: "general" | "ios" | "android";
+  category: "general" | "ios" | "android" | "metadata" | "credentials";
   name: string;
   status: DoctorStatus;
   message: string;
@@ -251,16 +267,21 @@ interface EasConfig {
 
 interface PackageJson {
   name?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
 }
 
 interface AppJsonConfig {
   expo?: {
     name?: string;
+    version?: string;
     ios?: {
       bundleIdentifier?: string;
+      buildNumber?: string;
     };
     android?: {
       package?: string;
+      versionCode?: number;
     };
   };
 }
@@ -336,11 +357,25 @@ function getFeasHomeDir(): string {
   return path.join(os.homedir(), ".feas");
 }
 
-class JsonFileSecretStore implements SecretStore {
+class EncryptedFileSecretStore implements SecretStore {
   private readonly filePath: string;
+  private readonly keyPath: string;
 
   constructor(filePath: string) {
     this.filePath = filePath;
+    this.keyPath = `${filePath}.key`;
+  }
+
+  private async getKey(): Promise<Buffer> {
+    if (await fileExists(this.keyPath)) {
+      const raw = await fs.readFile(this.keyPath, "utf8");
+      return scryptSync(raw.trim(), "feas-local-secret-store-v1", 32);
+    }
+
+    const secret = randomBytes(32).toString("base64url");
+    await fs.mkdir(path.dirname(this.keyPath), { recursive: true });
+    await fs.writeFile(this.keyPath, `${secret}\n`, { encoding: "utf8", mode: 0o600 });
+    return scryptSync(secret, "feas-local-secret-store-v1", 32);
   }
 
   private async readAll(): Promise<Record<string, string>> {
@@ -349,12 +384,33 @@ class JsonFileSecretStore implements SecretStore {
     }
 
     const raw = await fs.readFile(this.filePath, "utf8");
-    return JSON.parse(raw) as Record<string, string>;
+    const parsed = JSON.parse(raw) as { version?: number; iv?: string; tag?: string; data?: string } | Record<string, string>;
+    if (!("version" in parsed)) {
+      return parsed as Record<string, string>;
+    }
+    if (parsed.version !== 1 || !parsed.iv || !parsed.tag || !parsed.data) {
+      throw new Error(`Unsupported FEAS secret store format at ${this.filePath}.`);
+    }
+
+    const decipher = createDecipheriv("aes-256-gcm", await this.getKey(), Buffer.from(parsed.iv, "base64"));
+    decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(parsed.data, "base64")), decipher.final()]);
+    return JSON.parse(decrypted.toString("utf8")) as Record<string, string>;
   }
 
   private async writeAll(secrets: Record<string, string>): Promise<void> {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", await this.getKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(secrets), "utf8"), cipher.final()]);
+    const payload = {
+      version: 1,
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      data: encrypted.toString("base64"),
+    };
+
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, `${JSON.stringify(secrets, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.writeFile(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
   async get(key: string): Promise<string | null> {
@@ -384,6 +440,31 @@ class JsonFileSecretStore implements SecretStore {
       return keys.sort();
     }
     return keys.filter((key) => key.startsWith(prefix)).sort();
+  }
+}
+
+class EnvSecretStore implements SecretStore {
+  private keyToEnvName(key: string): string {
+    return `FEAS_SECRET_${key.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
+  }
+
+  async get(key: string): Promise<string | null> {
+    return process.env[this.keyToEnvName(key)] ?? null;
+  }
+
+  async set(): Promise<void> {
+    throw new Error("EnvSecretStore is read-only. Set FEAS_SECRET_* environment variables instead.");
+  }
+
+  async delete(): Promise<void> {
+    throw new Error("EnvSecretStore is read-only.");
+  }
+
+  async list(prefix?: string): Promise<string[]> {
+    const envPrefix = prefix ? this.keyToEnvName(prefix) : "FEAS_SECRET_";
+    return Object.keys(process.env)
+      .filter((key) => key.startsWith(envPrefix))
+      .sort();
   }
 }
 
@@ -424,6 +505,62 @@ async function findProjectRoot(startDir: string): Promise<string> {
   }
 }
 
+function mergeAppConfig(base: AppJsonConfig | null, overlay: AppJsonConfig | null): AppJsonConfig | null {
+  if (!base && !overlay) {
+    return null;
+  }
+  return {
+    expo: {
+      ...(base?.expo ?? {}),
+      ...(overlay?.expo ?? {}),
+      ios: {
+        ...(base?.expo?.ios ?? {}),
+        ...(overlay?.expo?.ios ?? {}),
+      },
+      android: {
+        ...(base?.expo?.android ?? {}),
+        ...(overlay?.expo?.android ?? {}),
+      },
+    },
+  };
+}
+
+function readStaticAppConfigSource(source: string): AppJsonConfig {
+  return {
+    expo: {
+      name: source.match(/\bname\s*:\s*["']([^"']+)["']/)?.[1],
+      version: source.match(/\bversion\s*:\s*["']([^"']+)["']/)?.[1],
+      ios: {
+        bundleIdentifier: source.match(/\bbundleIdentifier\s*:\s*["']([^"']+)["']/)?.[1],
+        buildNumber: source.match(/\bbuildNumber\s*:\s*["']([^"']+)["']/)?.[1],
+      },
+      android: {
+        package: source.match(/\bpackage\s*:\s*["']([^"']+)["']/)?.[1],
+        versionCode: Number(source.match(/\bversionCode\s*:\s*(\d+)/)?.[1]) || undefined,
+      },
+    },
+  };
+}
+
+function detectProjectType(packageJson: PackageJson, appConfigPath: string | null): FeasProjectInfo["projectType"] {
+  const deps = {
+    ...(packageJson.dependencies ?? {}),
+    ...(packageJson.devDependencies ?? {}),
+  };
+  const hasExpo = Boolean(deps.expo) || Boolean(appConfigPath);
+  const hasReactNative = Boolean(deps["react-native"]);
+  if (hasExpo && hasReactNative) {
+    return "hybrid";
+  }
+  if (hasExpo) {
+    return "expo";
+  }
+  if (hasReactNative) {
+    return "react-native";
+  }
+  return "unknown";
+}
+
 function hasEasPlatformConfig(easConfig: EasConfig, platform: "ios" | "android"): boolean {
   if (!easConfig.build) {
     return false;
@@ -452,7 +589,10 @@ function resolveProjectIdentity(detection: FeasProjectInfo): { projectId: string
 }
 
 function getSecretStore(): SecretStore {
-  return new JsonFileSecretStore(path.join(getFeasHomeDir(), "secrets.json"));
+  if (process.env.FEAS_SECRET_STORE === "env") {
+    return new EnvSecretStore();
+  }
+  return new EncryptedFileSecretStore(path.join(getFeasHomeDir(), "secrets.enc.json"));
 }
 
 function credentialsKey(projectId: string, platform: "ios" | "android", name: string): string {
@@ -481,25 +621,34 @@ function resolveProjectStoragePaths(detection: FeasProjectInfo): {
 
 async function readAppJsonConfig(projectRoot: string): Promise<{
   appConfigPath: string | null;
+  appConfigSources: string[];
   appConfig: AppJsonConfig | null;
 }> {
+  let merged: AppJsonConfig | null = null;
+  const sources: string[] = [];
+
   const appJsonPath = path.join(projectRoot, "app.json");
   if (await fileExists(appJsonPath)) {
     const parsed = await readJsonFile<AppJsonConfig>(appJsonPath);
-    return { appConfigPath: appJsonPath, appConfig: parsed };
+    merged = mergeAppConfig(merged, parsed);
+    sources.push(appJsonPath);
   }
 
   const appConfigTsPath = path.join(projectRoot, "app.config.ts");
   if (await fileExists(appConfigTsPath)) {
-    return { appConfigPath: appConfigTsPath, appConfig: null };
+    const parsed = readStaticAppConfigSource(await fs.readFile(appConfigTsPath, "utf8"));
+    merged = mergeAppConfig(merged, parsed);
+    sources.push(appConfigTsPath);
   }
 
   const appConfigJsPath = path.join(projectRoot, "app.config.js");
   if (await fileExists(appConfigJsPath)) {
-    return { appConfigPath: appConfigJsPath, appConfig: null };
+    const parsed = readStaticAppConfigSource(await fs.readFile(appConfigJsPath, "utf8"));
+    merged = mergeAppConfig(merged, parsed);
+    sources.push(appConfigJsPath);
   }
 
-  return { appConfigPath: null, appConfig: null };
+  return { appConfigPath: sources[0] ?? null, appConfigSources: sources, appConfig: merged };
 }
 
 async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo; easConfig: EasConfig }> {
@@ -518,7 +667,7 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
   }
 
   const easConfig = await readJsonFile<EasConfig>(easJsonPath);
-  const { appConfigPath, appConfig } = await readAppJsonConfig(rootPath);
+  const { appConfigPath, appConfigSources, appConfig } = await readAppJsonConfig(rootPath);
 
   const iosDirPath = path.join(rootPath, "ios");
   const androidDirPath = path.join(rootPath, "android");
@@ -549,6 +698,12 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
       displayName,
       easJsonPath,
       expoConfigPath: appConfigPath,
+      projectType: detectProjectType(packageJson, appConfigPath),
+      configSources: appConfigSources,
+      nativeFolders: {
+        ios: await fileExists(iosDirPath),
+        android: await fileExists(androidDirPath),
+      },
       platforms: {
         ios: iosDetected,
         android: androidDetected,
@@ -594,6 +749,204 @@ function timestampForFileName(date: Date): string {
   return date.toISOString().replace(/[:.]/g, "-");
 }
 
+function collectStringEnv(...sources: Array<Record<string, unknown> | undefined>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === "string") {
+        env[key] = value;
+      }
+    }
+  }
+  return env;
+}
+
+function resolveBuildProfileEnv(profileConfig: EasBuildProfile, platform: "ios" | "android"): Record<string, string> {
+  const platformConfig = profileConfig[platform] as (Record<string, unknown> & { env?: Record<string, unknown> }) | undefined;
+  return collectStringEnv(profileConfig.env, platformConfig?.env);
+}
+
+function incrementNumericString(value: string | undefined, fallback = 1): string {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return String(Number.isFinite(parsed) ? parsed + 1 : fallback);
+}
+
+async function replaceInFile(filePath: string, replacers: Array<[RegExp, string]>, dryRun: boolean): Promise<boolean> {
+  if (!(await fileExists(filePath))) {
+    return false;
+  }
+
+  const original = await fs.readFile(filePath, "utf8");
+  let next = original;
+  for (const [pattern, replacement] of replacers) {
+    next = next.replace(pattern, replacement);
+  }
+
+  if (next === original) {
+    return false;
+  }
+
+  if (!dryRun) {
+    await fs.copyFile(filePath, `${filePath}.feas-backup`);
+    await fs.writeFile(filePath, next, "utf8");
+  }
+  return true;
+}
+
+async function findFilesByName(root: string, targetNames: string[], maxDepth: number): Promise<string[]> {
+  if (!(await fileExists(root)) || maxDepth < 0) {
+    return [];
+  }
+
+  const found: string[] = [];
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isFile() && targetNames.includes(entry.name)) {
+      found.push(fullPath);
+      continue;
+    }
+    if (entry.isDirectory() && maxDepth > 0 && !["build", "Pods", ".gradle"].includes(entry.name)) {
+      found.push(...(await findFilesByName(fullPath, targetNames, maxDepth - 1)));
+    }
+  }
+  return found;
+}
+
+async function gitStatus(projectRoot: string): Promise<{ insideRepo: boolean; clean: boolean; output: string }> {
+  try {
+    await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--is-inside-work-tree"]);
+    const { stdout } = await execFileAsync("git", ["-C", projectRoot, "status", "--porcelain"]);
+    return { insideRepo: true, clean: stdout.trim().length === 0, output: stdout.trim() };
+  } catch {
+    return { insideRepo: false, clean: true, output: "" };
+  }
+}
+
+async function bumpProjectVersions(projectRoot: string, platforms: Array<"ios" | "android">, dryRun: boolean): Promise<{
+  version?: string;
+  buildNumber?: string;
+  changedFiles: string[];
+}> {
+  const appJsonPath = path.join(projectRoot, "app.json");
+  const changedFiles: string[] = [];
+  let version: string | undefined;
+  let buildNumber: string | undefined;
+
+  if (await fileExists(appJsonPath)) {
+    const config = await readJsonFile<AppJsonConfig>(appJsonPath);
+    config.expo ??= {};
+    version = config.expo.version;
+
+    if (platforms.includes("ios")) {
+      config.expo.ios ??= {};
+      buildNumber = incrementNumericString(config.expo.ios.buildNumber, 1);
+      config.expo.ios.buildNumber = buildNumber;
+    }
+
+    if (platforms.includes("android")) {
+      config.expo.android ??= {};
+      const nextVersionCode = Number.isFinite(config.expo.android.versionCode)
+        ? (config.expo.android.versionCode as number) + 1
+        : 1;
+      config.expo.android.versionCode = nextVersionCode;
+      buildNumber = String(nextVersionCode);
+    }
+
+    if (!dryRun) {
+      await fs.copyFile(appJsonPath, `${appJsonPath}.feas-backup`);
+      await writeJsonFile(appJsonPath, config);
+    }
+    changedFiles.push(appJsonPath);
+  }
+
+  const appConfigFiles = ["app.config.ts", "app.config.js"].map((name) => path.join(projectRoot, name));
+  for (const appConfigPath of appConfigFiles) {
+    if (!(await fileExists(appConfigPath))) {
+      continue;
+    }
+    const original = await fs.readFile(appConfigPath, "utf8");
+    const currentIosBuild = original.match(/buildNumber\s*:\s*["'](\d+)["']/)?.[1];
+    const currentAndroidCode = original.match(/versionCode\s*:\s*(\d+)/)?.[1];
+    const nextIosBuild = incrementNumericString(currentIosBuild, 1);
+    const nextAndroidCode = String((Number.parseInt(currentAndroidCode ?? "", 10) || 0) + 1);
+    const replacements: Array<[RegExp, string]> = [];
+    if (platforms.includes("ios")) {
+      replacements.push([/buildNumber\s*:\s*["']\d+["']/, `buildNumber: "${nextIosBuild}"`]);
+      buildNumber = nextIosBuild;
+    }
+    if (platforms.includes("android")) {
+      replacements.push([/versionCode\s*:\s*\d+/, `versionCode: ${nextAndroidCode}`]);
+      buildNumber = nextAndroidCode;
+    }
+    if (await replaceInFile(appConfigPath, replacements, dryRun)) {
+      changedFiles.push(appConfigPath);
+    }
+  }
+
+  if (platforms.includes("ios")) {
+    const plistFiles = await findFilesByName(path.join(projectRoot, "ios"), ["Info.plist"], 4);
+    for (const plistPath of plistFiles) {
+      const original = await fs.readFile(plistPath, "utf8");
+      const current = original.match(/<key>CFBundleVersion<\/key>\s*<string>(\d+)<\/string>/)?.[1];
+      if (!current) {
+        continue;
+      }
+      const next = incrementNumericString(current, 1);
+      if (
+        await replaceInFile(
+          plistPath,
+          [[/<key>CFBundleVersion<\/key>\s*<string>\d+<\/string>/, `<key>CFBundleVersion</key>\n\t<string>${next}</string>`]],
+          dryRun,
+        )
+      ) {
+        buildNumber = next;
+        changedFiles.push(plistPath);
+      }
+    }
+  }
+
+  if (platforms.includes("android")) {
+    const gradleFiles = [
+      path.join(projectRoot, "android", "app", "build.gradle"),
+      path.join(projectRoot, "android", "app", "build.gradle.kts"),
+    ];
+    for (const gradlePath of gradleFiles) {
+      if (!(await fileExists(gradlePath))) {
+        continue;
+      }
+      const original = await fs.readFile(gradlePath, "utf8");
+      const current = original.match(/\bversionCode\s+(\d+)/)?.[1] ?? original.match(/\bversionCode\s*=\s*(\d+)/)?.[1];
+      if (!current) {
+        continue;
+      }
+      const next = String(Number.parseInt(current, 10) + 1);
+      if (
+        await replaceInFile(
+          gradlePath,
+          [
+            [/\bversionCode\s+\d+/, `versionCode ${next}`],
+            [/\bversionCode\s*=\s*\d+/, `versionCode = ${next}`],
+          ],
+          dryRun,
+        )
+      ) {
+        buildNumber = next;
+        changedFiles.push(gradlePath);
+      }
+    }
+  }
+
+  return {
+    version,
+    buildNumber,
+    changedFiles,
+  };
+}
+
 function buildCommandForPlatform(platform: "ios" | "android"): string {
   if (platform === "ios") {
     return "fastlane ios build";
@@ -608,6 +961,43 @@ function submitCommandForPlatform(platform: SubmitPlatform): string {
   }
 
   return "fastlane android submit";
+}
+
+function metadataCommandForPlatform(platform: SubmitPlatform, mode: "pull" | "push"): string {
+  return `fastlane ${platform} metadata_${mode}`;
+}
+
+async function ensureNativeFolderForBuild(options: {
+  detection: FeasProjectInfo;
+  platform: "ios" | "android";
+  allowPrebuild: boolean;
+  logLines: string[];
+}): Promise<void> {
+  if (options.detection.nativeFolders[options.platform]) {
+    return;
+  }
+
+  if (!options.allowPrebuild) {
+    throw new Error(
+      `${options.platform} native folder is missing. This looks like Expo CNG/managed output. FEAS will not regenerate native folders unless explicitly allowed. Run \`npx expo prebuild --platform ${options.platform}\` yourself or rerun with --prebuild.`,
+    );
+  }
+
+  if (options.detection.projectType !== "expo" && options.detection.projectType !== "hybrid") {
+    throw new Error(`${options.platform} native folder is missing and project is not detected as Expo. Cannot prebuild safely.`);
+  }
+
+  options.logLines.push(`[feas] prebuild: npx expo prebuild --platform ${options.platform}`);
+  const result = await runCommand("npx", ["expo", "prebuild", "--platform", options.platform], options.detection.rootPath);
+  if (result.stdout.trim()) {
+    options.logLines.push("[feas] prebuild stdout:", result.stdout.trimEnd());
+  }
+  if (result.stderr.trim()) {
+    options.logLines.push("[feas] prebuild stderr:", result.stderr.trimEnd());
+  }
+  if (!result.success) {
+    throw new Error(`Expo prebuild failed for ${options.platform} with exit code ${result.exitCode}.`);
+  }
 }
 
 function inferLogType(fileName: string): FeasLogEntry["type"] {
@@ -843,12 +1233,63 @@ platform :ios do
       UI.message("Simulated iOS submit for #{artifact}")
     end
   end
+
+  lane :metadata_pull do
+    metadata_path = ENV["FEAS_METADATA_PATH"]
+    key_id = ENV["FEAS_IOS_KEY_ID"]
+    issuer_id = ENV["FEAS_IOS_ISSUER_ID"]
+    key_path = ENV["FEAS_IOS_API_KEY_PATH"]
+    UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
+    UI.user_error!("Missing FEAS_IOS_KEY_ID for metadata pull.") unless key_id
+    UI.user_error!("Missing FEAS_IOS_ISSUER_ID for metadata pull.") unless issuer_id
+    UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for metadata pull.") unless key_path
+
+    app_store_connect_api_key(
+      key_id: key_id,
+      issuer_id: issuer_id,
+      key_filepath: key_path
+    )
+
+    deliver(
+      metadata_path: metadata_path,
+      screenshots_path: File.join(metadata_path, "screenshots"),
+      skip_screenshots: true,
+      force: true,
+      download_metadata: true
+    )
+  end
+
+  lane :metadata_push do
+    metadata_path = ENV["FEAS_METADATA_PATH"]
+    key_id = ENV["FEAS_IOS_KEY_ID"]
+    issuer_id = ENV["FEAS_IOS_ISSUER_ID"]
+    key_path = ENV["FEAS_IOS_API_KEY_PATH"]
+    UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
+    UI.user_error!("Missing FEAS_IOS_KEY_ID for metadata push.") unless key_id
+    UI.user_error!("Missing FEAS_IOS_ISSUER_ID for metadata push.") unless issuer_id
+    UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for metadata push.") unless key_path
+
+    app_store_connect_api_key(
+      key_id: key_id,
+      issuer_id: issuer_id,
+      key_filepath: key_path
+    )
+
+    deliver(
+      metadata_path: metadata_path,
+      screenshots_path: File.join(metadata_path, "screenshots"),
+      skip_screenshots: true,
+      submit_for_review: false,
+      force: true
+    )
+  end
 end
 
 platform :android do
   lane :build do
     artifact = ENV["FEAS_ARTIFACT_PATH"]
     project_root = ENV["FEAS_PROJECT_ROOT"]
+    gradle_project_dir = ENV["FEAS_ANDROID_PROJECT_DIR"] || File.join(project_root, "android")
     gradle_task = ENV["FEAS_ANDROID_GRADLE_TASK"] || ":app:bundleRelease"
     source_artifact = ENV["FEAS_ANDROID_ARTIFACT_SOURCE"]
 
@@ -856,7 +1297,7 @@ platform :android do
     UI.user_error!("FEAS_PROJECT_ROOT is required.") unless project_root
     UI.user_error!("FEAS_ANDROID_ARTIFACT_SOURCE is required.") unless source_artifact
 
-    gradle(task: gradle_task, project_dir: project_root)
+    gradle(task: gradle_task, project_dir: gradle_project_dir)
 
     unless File.exist?(source_artifact)
       UI.user_error!("Expected Android artifact not found at #{source_artifact}")
@@ -888,6 +1329,45 @@ platform :android do
     else
       UI.message("Simulated Android submit for #{artifact}")
     end
+  end
+
+  lane :metadata_pull do
+    metadata_path = ENV["FEAS_METADATA_PATH"]
+    json_key = ENV["FEAS_ANDROID_SERVICE_ACCOUNT_PATH"]
+    package_name = ENV["FEAS_ANDROID_PACKAGE_NAME"]
+    UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
+    UI.user_error!("Missing FEAS_ANDROID_SERVICE_ACCOUNT_PATH for metadata pull.") unless json_key
+    UI.user_error!("Missing FEAS_ANDROID_PACKAGE_NAME for metadata pull.") unless package_name
+
+    supply(
+      json_key: json_key,
+      package_name: package_name,
+      metadata_path: metadata_path,
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      validate_only: true
+    )
+  end
+
+  lane :metadata_push do
+    metadata_path = ENV["FEAS_METADATA_PATH"]
+    json_key = ENV["FEAS_ANDROID_SERVICE_ACCOUNT_PATH"]
+    package_name = ENV["FEAS_ANDROID_PACKAGE_NAME"]
+    UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
+    UI.user_error!("Missing FEAS_ANDROID_SERVICE_ACCOUNT_PATH for metadata push.") unless json_key
+    UI.user_error!("Missing FEAS_ANDROID_PACKAGE_NAME for metadata push.") unless package_name
+
+    supply(
+      json_key: json_key,
+      package_name: package_name,
+      metadata_path: metadata_path,
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
   end
 end
 `;
@@ -977,6 +1457,7 @@ export async function initFeasProject(options: InitFeasProjectOptions): Promise<
     "logs/builds",
     "logs/submissions",
     "logs/releases",
+    "logs/metadata",
     "credentials",
     "cache",
   ];
@@ -1060,6 +1541,9 @@ export async function resolveFeasConfig(options: { cwd: string; profile?: string
       easJsonPath: detection.easJsonPath,
       platforms: detection.platforms,
       bundleIdentifiers: detection.bundleIdentifiers,
+      projectType: detection.projectType,
+      configSources: detection.configSources,
+      nativeFolders: detection.nativeFolders,
     },
     eas: {
       profileExists: Boolean(selectedBuildProfile),
@@ -1093,7 +1577,8 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
   }
   const internalConfig = await readInternalConfig(internalConfigPath);
 
-  if (!easConfig.build?.[profile]) {
+  const selectedBuildProfile = easConfig.build?.[profile];
+  if (!selectedBuildProfile) {
     throw new Error(`Build profile '${profile}' not found in eas.json.`);
   }
 
@@ -1137,6 +1622,7 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
     const command = buildCommandForPlatform(platform);
     const timestamp = timestampForFileName(startedAt);
     const artifactExtension = platform === "ios" ? "ipa" : "aab";
+    const profileEnv = resolveBuildProfileEnv(selectedBuildProfile, platform);
     const artifactPath = path.join(
       projectPath,
       "artifacts",
@@ -1156,6 +1642,7 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
     logLines.push(`[feas] platform: ${platform}`);
     logLines.push(`[feas] profile: ${profile}`);
     logLines.push(`[feas] command: ${command}`);
+    logLines.push(`[feas] env keys: ${Object.keys(profileEnv).sort().join(", ") || "none"}`);
     logLines.push(`[feas] startedAt: ${startedAt.toISOString()}`);
 
     if (dryRun) {
@@ -1169,9 +1656,23 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
     } else {
       logLines.push("[feas] mode: real");
       let platformEnv: Record<string, string> = {};
+      try {
+        await ensureNativeFolderForBuild({
+          detection,
+          platform,
+          allowPrebuild: options.allowPrebuild ?? false,
+          logLines,
+        });
+      } catch (error) {
+        status = "failed";
+        errorCode = "NATIVE_FOLDER_MISSING";
+        errorMessage = error instanceof Error ? error.message : "Native folder missing.";
+      }
       if (platform === "ios") {
         const iosConfig = internalConfig.platforms.ios;
-        if (!iosConfig) {
+        if (errorCode) {
+          // Preserve the native folder/prebuild failure.
+        } else if (!iosConfig) {
           status = "failed";
           errorCode = "IOS_CONFIG_MISSING";
           errorMessage = "Missing iOS configuration in internal.config.json. Re-run `feas init --force`.";
@@ -1191,13 +1692,16 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
         }
       } else {
         const androidConfig = internalConfig.platforms.android;
-        if (!androidConfig) {
+        if (errorCode) {
+          // Preserve the native folder/prebuild failure.
+        } else if (!androidConfig) {
           status = "failed";
           errorCode = "ANDROID_CONFIG_MISSING";
           errorMessage = "Missing Android configuration in internal.config.json. Re-run `feas init --force`.";
         } else {
           platformEnv = {
             FEAS_ANDROID_GRADLE_TASK: androidConfig.gradleTask,
+            FEAS_ANDROID_PROJECT_DIR: path.join(detection.rootPath, "android"),
             FEAS_ANDROID_ARTIFACT_SOURCE: path.join(detection.rootPath, androidConfig.artifactSourcePath),
           };
         }
@@ -1211,6 +1715,7 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
           FEAS_ARTIFACT_PATH: artifactPath,
           FEAS_PROJECT_ROOT: detection.rootPath,
           FEAS_PROFILE: profile,
+          ...profileEnv,
           ...platformEnv,
         });
       }
@@ -1257,6 +1762,8 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
         platform,
         profile,
         status,
+        version: undefined,
+        buildNumber: undefined,
         artifactPath,
         logPath,
         startedAt,
@@ -1279,6 +1786,8 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),
       durationMs,
+      version: undefined,
+      buildNumber: undefined,
       errorCode,
       errorMessage,
     });
@@ -1481,8 +1990,16 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
   const profile = options.profile ?? "production";
   const dryRun = options.dryRun ?? false;
   const skipSubmit = options.skipSubmit ?? false;
-  const { detection } = await detectProject(options.cwd);
-  const { projectId, databasePath } = resolveProjectStoragePaths(detection);
+  const { detection, easConfig } = await detectProject(options.cwd);
+  const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
+
+  if (!(await fileExists(internalConfigPath))) {
+    throw new Error("Project is not initialized. Run `feas init` before running release.");
+  }
+  const internalConfig = await readInternalConfig(internalConfigPath);
+  if (!easConfig.build?.[profile]) {
+    throw new Error(`Build profile '${profile}' not found in eas.json. Create build.${profile} before running release.`);
+  }
 
   const targetPlatforms: Array<"ios" | "android"> = [];
   if (options.platform === "all") {
@@ -1500,11 +2017,57 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
     throw new Error("No target platforms available for release.");
   }
 
+  for (const platform of targetPlatforms) {
+    if (!detection.platforms[platform]) {
+      throw new Error(`Platform '${platform}' is not configured for this project.`);
+    }
+  }
+
+  const doctorResult = await runDoctor({
+    cwd: options.cwd,
+    platform: options.platform,
+    profile,
+  });
+  if (!dryRun && doctorResult.summary.fail > 0) {
+    throw new Error(`Release preflight failed with ${doctorResult.summary.fail} failing doctor check(s). Run \`feas doctor ${options.platform}\`.`);
+  }
+
+  if (!dryRun && internalConfig.release.requireCleanGit) {
+    const git = await gitStatus(detection.rootPath);
+    if (git.insideRepo && !git.clean) {
+      throw new Error(`Release requires a clean git working tree. Commit or stash changes before release.\n${git.output}`);
+    }
+  }
+
+  if (!dryRun) {
+    for (const platform of targetPlatforms) {
+      const metadataValidation = await runMetadataValidate({ cwd: options.cwd, platform });
+      if (!metadataValidation.valid) {
+        throw new Error(`Metadata is incomplete for ${platform}. Run \`feas metadata validate ${platform}\` and fill required files.`);
+      }
+    }
+  }
+
+  const versionBump = options.noBump ? { changedFiles: [] } : await bumpProjectVersions(detection.rootPath, targetPlatforms, dryRun);
   const releases: ReleaseExecution[] = [];
 
   for (const platform of targetPlatforms) {
     const releaseId = randomUUID();
     const startedAt = new Date();
+    const timestamp = timestampForFileName(startedAt);
+    const logPath = path.join(projectPath, "logs", "releases", `release-${timestamp}-${platform}-${releaseId}.log`);
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    const logLines: string[] = [
+      `[feas] release id: ${releaseId}`,
+      `[feas] platform: ${platform}`,
+      `[feas] profile: ${profile}`,
+      `[feas] mode: ${dryRun ? "dry-run" : "real"}`,
+      `[feas] skipSubmit: ${skipSubmit}`,
+      `[feas] version: ${versionBump.version ?? "unknown"}`,
+      `[feas] buildNumber: ${versionBump.buildNumber ?? "unknown"}`,
+      `[feas] changedFiles: ${versionBump.changedFiles.join(", ") || "none"}`,
+      `[feas] startedAt: ${startedAt.toISOString()}`,
+    ];
     let finishedAt = startedAt;
     let status: ReleaseExecution["status"] = "success";
     let errorMessage: string | undefined;
@@ -1516,9 +2079,11 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
       platform,
       profile,
       dryRun,
+      allowPrebuild: options.allowPrebuild,
     });
     const buildExecution = buildResult.builds[0];
     buildId = buildExecution?.id;
+    logLines.push(`[feas] buildId: ${buildId ?? "none"}`);
 
     if (!buildExecution || buildExecution.status === "failed") {
       status = "failed";
@@ -1533,6 +2098,7 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
         dryRun,
       });
       submissionId = submitResult.submission.id;
+      logLines.push(`[feas] submissionId: ${submissionId}`);
       if (submitResult.submission.status === "failed") {
         status = "failed";
         errorMessage = submitResult.submission.errorMessage ?? "Submit step failed.";
@@ -1550,13 +2116,23 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
         platform,
         profile,
         status,
+        version: versionBump.version,
+        buildNumber: versionBump.buildNumber,
         buildId,
         submissionId,
+        releaseNotes: undefined,
         startedAt,
         finishedAt,
         errorMessage,
       },
     });
+
+    if (errorMessage) {
+      logLines.push(`[feas] errorMessage: ${errorMessage}`);
+    }
+    logLines.push(`[feas] finishedAt: ${finishedAt.toISOString()}`);
+    logLines.push(`[feas] status: ${status}`);
+    await fs.writeFile(logPath, `${logLines.join("\n")}\n`, "utf8");
 
     releases.push({
       id: releaseId,
@@ -1567,6 +2143,9 @@ export async function runRelease(options: RunReleaseOptions): Promise<RunRelease
       submissionId,
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),
+      version: versionBump.version,
+      buildNumber: versionBump.buildNumber,
+      changedFiles: versionBump.changedFiles,
       errorMessage,
     });
   }
@@ -1590,6 +2169,7 @@ export async function listLogs(options: ListLogsOptions): Promise<ListLogsResult
     path.join(projectPath, "logs", "builds"),
     path.join(projectPath, "logs", "submissions"),
     path.join(projectPath, "logs", "releases"),
+    path.join(projectPath, "logs", "metadata"),
   ];
 
   const files: Array<{ filePath: string; createdAtMs: number }> = [];
@@ -1637,12 +2217,89 @@ export async function listLogs(options: ListLogsOptions): Promise<ListLogsResult
   };
 }
 
+async function runMetadataFastlane(options: {
+  detection: FeasProjectInfo;
+  internalConfig: InternalConfig;
+  projectId: string;
+  projectPath: string;
+  platform: "ios" | "android";
+  mode: "pull" | "push";
+  metadataRoot: string;
+}): Promise<{ logPath: string }> {
+  const startedAt = new Date();
+  const timestamp = timestampForFileName(startedAt);
+  const id = randomUUID();
+  const fastfilePath = path.join(options.projectPath, "fastlane", "Fastfile");
+  const logPath = path.join(options.projectPath, "logs", "metadata", `metadata-${timestamp}-${options.mode}-${options.platform}-${id}.log`);
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+
+  const secretStore = getSecretStore();
+  let env: Record<string, string> = {};
+  if (options.platform === "ios") {
+    const keyId = await secretStore.get(credentialsKey(options.projectId, "ios", "key_id"));
+    const issuerId = await secretStore.get(credentialsKey(options.projectId, "ios", "issuer_id"));
+    const privateKeyPath = await secretStore.get(credentialsKey(options.projectId, "ios", "private_key_path"));
+    if (!keyId || !issuerId || !privateKeyPath) {
+      throw new Error("Missing iOS metadata credentials. Run `feas credentials ios ...` or set FEAS_SECRET_* values.");
+    }
+    env = {
+      FEAS_IOS_KEY_ID: keyId,
+      FEAS_IOS_ISSUER_ID: issuerId,
+      FEAS_IOS_API_KEY_PATH: privateKeyPath,
+    };
+  } else {
+    const serviceAccountPath = await secretStore.get(credentialsKey(options.projectId, "android", "service_account_path"));
+    const packageName = options.internalConfig.platforms.android?.playPackageName ?? options.detection.bundleIdentifiers.android;
+    if (!serviceAccountPath || !packageName) {
+      throw new Error("Missing Android metadata credentials/package name. Run `feas credentials android ...` and verify app id.");
+    }
+    env = {
+      FEAS_ANDROID_SERVICE_ACCOUNT_PATH: serviceAccountPath,
+      FEAS_ANDROID_PACKAGE_NAME: packageName,
+    };
+  }
+
+  const command = metadataCommandForPlatform(options.platform, options.mode);
+  const result = await runCommand("fastlane", [options.platform, `metadata_${options.mode}`], path.dirname(fastfilePath), {
+    FASTLANE_SKIP_UPDATE_CHECK: "1",
+    FASTLANE_FASTFILE_PATH: fastfilePath,
+    FEAS_METADATA_PATH: options.metadataRoot,
+    FEAS_PROJECT_ROOT: options.detection.rootPath,
+    ...env,
+  });
+
+  const lines = [
+    `[feas] metadata id: ${id}`,
+    `[feas] platform: ${options.platform}`,
+    `[feas] mode: ${options.mode}`,
+    `[feas] command: ${command}`,
+    `[feas] metadataRoot: ${options.metadataRoot}`,
+    `[feas] startedAt: ${startedAt.toISOString()}`,
+  ];
+  if (result.stdout.trim()) {
+    lines.push("[feas] stdout:", result.stdout.trimEnd());
+  }
+  if (result.stderr.trim()) {
+    lines.push("[feas] stderr:", result.stderr.trimEnd());
+  }
+  const finishedAt = new Date();
+  lines.push(`[feas] finishedAt: ${finishedAt.toISOString()}`);
+  lines.push(`[feas] status: ${result.success ? "success" : "failed"}`);
+  await fs.writeFile(logPath, `${lines.join("\n")}\n`, "utf8");
+
+  if (!result.success) {
+    throw new Error(`Fastlane metadata ${options.mode} failed with exit code ${result.exitCode}. Log: ${logPath}`);
+  }
+  return { logPath };
+}
+
 export async function runMetadataPull(options: { cwd: string; platform: "ios" | "android" }): Promise<MetadataOperationResult> {
   const { detection } = await detectProject(options.cwd);
-  const { projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
+  const { projectId, projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
   if (!(await fileExists(internalConfigPath))) {
     throw new Error("Project is not initialized. Run `feas init` before metadata operations.");
   }
+  const internalConfig = await readInternalConfig(internalConfigPath);
 
   const metadataRoot = path.join(projectPath, "metadata", options.platform, "en-NZ");
   await fs.mkdir(metadataRoot, { recursive: true });
@@ -1656,11 +2313,32 @@ export async function runMetadataPull(options: { cwd: string; platform: "ios" | 
     files.push(filePath);
   }
 
+  if (process.env.FEAS_METADATA_REAL === "1") {
+    const realResult = await runMetadataFastlane({
+      detection,
+      internalConfig,
+      projectId,
+      projectPath,
+      platform: options.platform,
+      mode: "pull",
+      metadataRoot: path.join(projectPath, "metadata", options.platform),
+    });
+    return {
+      project: detection,
+      platform: options.platform,
+      metadataRoot,
+      files,
+      mode: "real",
+      logPath: realResult.logPath,
+    };
+  }
+
   return {
     project: detection,
     platform: options.platform,
     metadataRoot,
     files,
+    mode: "local",
   };
 }
 
@@ -1705,11 +2383,35 @@ export async function runMetadataPush(options: { cwd: string; platform: "ios" | 
     throw new Error(`Metadata is incomplete for ${options.platform}. Run \`feas metadata validate ${options.platform}\` and fill required files.`);
   }
 
+  if (process.env.FEAS_METADATA_REAL === "1") {
+    const { detection } = await detectProject(options.cwd);
+    const { projectId, projectPath, internalConfigPath } = resolveProjectStoragePaths(detection);
+    const internalConfig = await readInternalConfig(internalConfigPath);
+    const realResult = await runMetadataFastlane({
+      detection,
+      internalConfig,
+      projectId,
+      projectPath,
+      platform: options.platform,
+      mode: "push",
+      metadataRoot: path.join(projectPath, "metadata", options.platform),
+    });
+    return {
+      project: validation.project,
+      platform: validation.platform,
+      metadataRoot: validation.metadataRoot,
+      files: validation.files,
+      mode: "real",
+      logPath: realResult.logPath,
+    };
+  }
+
   return {
     project: validation.project,
     platform: validation.platform,
     metadataRoot: validation.metadataRoot,
     files: validation.files,
+    mode: "local",
   };
 }
 
@@ -2056,6 +2758,74 @@ export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorRes
       status: gradleInstalled ? "pass" : "fail",
       message: gradleInstalled ? "Gradle wrapper or gradle command detected." : "No Gradle wrapper and gradle command not found.",
       fixCommand: gradleInstalled ? undefined : "Generate native Android project or install Gradle.",
+    });
+  }
+
+  const metadataPlatforms: Array<"ios" | "android"> = [];
+  if ((platform === "all" || platform === "ios") && detection.platforms.ios) {
+    metadataPlatforms.push("ios");
+  }
+  if ((platform === "all" || platform === "android") && detection.platforms.android) {
+    metadataPlatforms.push("android");
+  }
+
+  for (const metadataPlatform of metadataPlatforms) {
+    try {
+      const result = await runMetadataValidate({ cwd: options.cwd, platform: metadataPlatform });
+      checks.push({
+        id: `metadata_${metadataPlatform}_completeness`,
+        category: "metadata",
+        name: `${metadataPlatform} metadata completeness`,
+        status: result.valid ? "pass" : "warn",
+        message: result.valid
+          ? `${metadataPlatform} metadata required files are present.`
+          : `${metadataPlatform} metadata is incomplete (${result.missingFiles.length} missing/empty file(s)).`,
+        fixCommand: result.valid ? undefined : `Run feas metadata pull ${metadataPlatform}, fill required files, then feas metadata validate ${metadataPlatform}.`,
+      });
+    } catch {
+      checks.push({
+        id: `metadata_${metadataPlatform}_completeness`,
+        category: "metadata",
+        name: `${metadataPlatform} metadata completeness`,
+        status: "warn",
+        message: `${metadataPlatform} metadata could not be validated. Initialize FEAS and run metadata pull.`,
+        fixCommand: `Run feas init, then feas metadata pull ${metadataPlatform}.`,
+      });
+    }
+  }
+
+  try {
+    const credentials = await validateCredentials({ cwd: options.cwd });
+    if (platform === "all" || platform === "ios") {
+      checks.push({
+        id: "credentials_ios_configured",
+        category: "credentials",
+        name: "iOS credentials",
+        status: credentials.ios.configured ? "pass" : "warn",
+        message: credentials.ios.configured ? "iOS credentials are configured." : `iOS credentials missing: ${credentials.ios.missing.join(", ")}.`,
+        fixCommand: credentials.ios.configured ? undefined : "Run feas credentials ios ... before real iOS submit/metadata sync.",
+      });
+    }
+    if (platform === "all" || platform === "android") {
+      checks.push({
+        id: "credentials_android_configured",
+        category: "credentials",
+        name: "Android credentials",
+        status: credentials.android.configured ? "pass" : "warn",
+        message: credentials.android.configured
+          ? "Android credentials are configured."
+          : `Android credentials missing: ${credentials.android.missing.join(", ")}.`,
+        fixCommand: credentials.android.configured ? undefined : "Run feas credentials android ... before real Android submit/metadata sync.",
+      });
+    }
+  } catch {
+    checks.push({
+      id: "credentials_configured",
+      category: "credentials",
+      name: "Credentials",
+      status: "warn",
+      message: "Credentials could not be validated before project initialization.",
+      fixCommand: "Run feas init before credentials validation.",
     });
   }
 

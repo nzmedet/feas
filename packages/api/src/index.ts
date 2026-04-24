@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   configureAndroidCredentials,
   configureIosCredentials,
+  initFeasProject,
   runBuild,
   runDoctor,
   runSubmit,
@@ -134,11 +135,27 @@ async function readMetadataTree(metadataRoot: string): Promise<Record<string, { 
   return result;
 }
 
+function resolveSafeChildPath(root: string, relativePath: string): string | null {
+  if (path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  const normalizedRoot = path.resolve(root);
+  const resolved = path.resolve(normalizedRoot, relativePath);
+  const relative = path.relative(normalizedRoot, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  return resolved;
+}
+
 async function listLogFiles(logsRoot: string): Promise<Array<{ id: string; type: string; path: string; createdAt: string }>> {
   const targets = [
     { dir: path.join(logsRoot, "builds"), type: "build" },
     { dir: path.join(logsRoot, "submissions"), type: "submission" },
     { dir: path.join(logsRoot, "releases"), type: "release" },
+    { dir: path.join(logsRoot, "metadata"), type: "metadata" },
   ];
 
   const logs: Array<{ id: string; type: string; path: string; createdAt: string }> = [];
@@ -431,6 +448,21 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     return { projects };
   });
 
+  app.post("/api/projects", async (request, reply) => {
+    const body = (request.body ?? {}) as { rootPath?: string; profile?: string; force?: boolean };
+    if (!body.rootPath || body.rootPath.trim().length === 0) {
+      reply.code(400).send({ error: "root_path_required" });
+      return;
+    }
+
+    const result = await initFeasProject({
+      cwd: body.rootPath,
+      profile: body.profile,
+      force: body.force,
+    });
+    return result;
+  });
+
   app.get("/api/projects/:id", async (request, reply) => {
     const params = request.params as { id: string };
     const projectFilePath = path.join(feasHome, "projects", params.id, "project.json");
@@ -486,6 +518,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       platform?: "ios" | "android" | "all";
       profile?: string;
       dryRun?: boolean;
+      allowPrebuild?: boolean;
     };
     const paths = getProjectPaths(feasHome, params.id);
     const projectRoot = await readProjectRootFromProjectFile(paths);
@@ -499,6 +532,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       platform: body.platform ?? "all",
       profile: body.profile,
       dryRun: body.dryRun,
+      allowPrebuild: body.allowPrebuild,
     });
     return result;
   });
@@ -537,6 +571,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       profile?: string;
       dryRun?: boolean;
       skipSubmit?: boolean;
+      allowPrebuild?: boolean;
     };
     const paths = getProjectPaths(feasHome, params.id);
     const projectRoot = await readProjectRootFromProjectFile(paths);
@@ -551,6 +586,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       profile: body.profile,
       dryRun: body.dryRun,
       skipSubmit: body.skipSubmit,
+      allowPrebuild: body.allowPrebuild,
     });
     return result;
   });
@@ -646,7 +682,11 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     }
     const files = body.files ?? {};
     for (const [relative, content] of Object.entries(files)) {
-      const filePath = path.join(paths.metadataRoot, relative);
+      const filePath = resolveSafeChildPath(paths.metadataRoot, relative);
+      if (!filePath) {
+        reply.code(400).send({ error: "invalid_metadata_path", path: relative });
+        return;
+      }
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, "utf8");
     }
@@ -655,34 +695,58 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
 
   app.post("/api/projects/:id/metadata/pull", async (request, reply) => {
     const params = request.params as { id: string };
-    const body = (request.body ?? {}) as { platform?: "ios" | "android" };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android"; real?: boolean };
     const paths = getProjectPaths(feasHome, params.id);
     const projectRoot = await readProjectRootFromProjectFile(paths);
     if (!projectRoot) {
       reply.code(404).send({ error: "project_not_found" });
       return;
     }
-    const result = await runMetadataPull({
-      cwd: projectRoot,
-      platform: body.platform ?? "ios",
-    });
-    return result;
+    const previous = process.env.FEAS_METADATA_REAL;
+    if (body.real) {
+      process.env.FEAS_METADATA_REAL = "1";
+    }
+    try {
+      const result = await runMetadataPull({
+        cwd: projectRoot,
+        platform: body.platform ?? "ios",
+      });
+      return result;
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FEAS_METADATA_REAL;
+      } else {
+        process.env.FEAS_METADATA_REAL = previous;
+      }
+    }
   });
 
   app.post("/api/projects/:id/metadata/push", async (request, reply) => {
     const params = request.params as { id: string };
-    const body = (request.body ?? {}) as { platform?: "ios" | "android" };
+    const body = (request.body ?? {}) as { platform?: "ios" | "android"; real?: boolean };
     const paths = getProjectPaths(feasHome, params.id);
     const projectRoot = await readProjectRootFromProjectFile(paths);
     if (!projectRoot) {
       reply.code(404).send({ error: "project_not_found" });
       return;
     }
-    const result = await runMetadataPush({
-      cwd: projectRoot,
-      platform: body.platform ?? "ios",
-    });
-    return result;
+    const previous = process.env.FEAS_METADATA_REAL;
+    if (body.real) {
+      process.env.FEAS_METADATA_REAL = "1";
+    }
+    try {
+      const result = await runMetadataPush({
+        cwd: projectRoot,
+        platform: body.platform ?? "ios",
+      });
+      return result;
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FEAS_METADATA_REAL;
+      } else {
+        process.env.FEAS_METADATA_REAL = previous;
+      }
+    }
   });
 
   app.post("/api/projects/:id/metadata/validate", async (request, reply) => {

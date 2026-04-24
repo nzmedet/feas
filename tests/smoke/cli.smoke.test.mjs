@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,8 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
   try {
     await mkdir(appDir, { recursive: true });
     await mkdir(path.join(appDir, "dist"), { recursive: true });
+    await mkdir(path.join(appDir, "ios", "SmokeApp"), { recursive: true });
+    await mkdir(path.join(appDir, "android", "app"), { recursive: true });
 
     await writeFile(
       path.join(appDir, "package.json"),
@@ -50,6 +52,9 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
           cli: { version: ">= 10.0.0" },
           build: {
             production: {
+              env: {
+                EXPO_PUBLIC_ENVIRONMENT: "production",
+              },
               ios: {},
               android: {},
             },
@@ -73,8 +78,9 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
         {
           expo: {
             name: "Smoke App",
-            ios: { bundleIdentifier: "com.example.smoke" },
-            android: { package: "com.example.smoke" },
+            version: "1.0.0",
+            ios: { bundleIdentifier: "com.example.smoke", buildNumber: "7" },
+            android: { package: "com.example.smoke", versionCode: 11 },
           },
         },
         null,
@@ -82,8 +88,43 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
       ),
       "utf8",
     );
+    await writeFile(
+      path.join(appDir, "app.config.ts"),
+      `export default {
+  expo: {
+    name: "Smoke App",
+    ios: { buildNumber: "3" },
+    android: { versionCode: 10 },
+  },
+};
+`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(appDir, "ios", "SmokeApp", "Info.plist"),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleVersion</key>
+  <string>12</string>
+</dict>
+</plist>
+`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(appDir, "android", "app", "build.gradle"),
+      `android {
+    defaultConfig {
+        versionCode 21
+    }
+}
+`,
+      "utf8",
+    );
 
     await writeFile(path.join(appDir, "dist", "app.ipa"), "fake-ipa", "utf8");
+    await writeFile(path.join(appDir, "AuthKey_TEST.p8"), "fake-p8", "utf8");
 
     const initResult = runFeas(["init"], { cwd: appDir, feasHome });
     assert.equal(initResult.status, 0, `init failed: ${initResult.stderr}`);
@@ -103,11 +144,24 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
     const metadataFiles = await readdir(metadataDir);
     assert.equal(metadataFiles.length > 0, true);
 
+    const credentialsResult = runFeas(
+      ["credentials", "ios", "--key-id", "KEY123", "--issuer-id", "ISSUER123", "--private-key-path", "AuthKey_TEST.p8"],
+      { cwd: appDir, feasHome },
+    );
+    assert.equal(credentialsResult.status, 0, `credentials failed: ${credentialsResult.stderr}`);
+    const encryptedSecrets = await readFile(path.join(feasHome, "secrets.enc.json"), "utf8");
+    assert.match(encryptedSecrets, /"version": 1/);
+    assert.doesNotMatch(encryptedSecrets, /KEY123|ISSUER123|AuthKey_TEST/);
+
     const buildResult = runFeas(["build", "all", "--dry-run", "--json"], { cwd: appDir, feasHome });
     assert.equal(buildResult.status, 0, `build failed: ${buildResult.stderr}`);
     const buildPayload = JSON.parse(buildResult.stdout);
     assert.equal(Array.isArray(buildPayload.builds), true);
     assert.equal(buildPayload.builds.length, 2);
+
+    const latestBuildLog = runFeas(["logs", "--latest", "--raw"], { cwd: appDir, feasHome });
+    assert.equal(latestBuildLog.status, 0, `logs failed: ${latestBuildLog.stderr}`);
+    assert.match(latestBuildLog.stdout, /env keys:/);
 
     const submitResult = runFeas(["submit", "ios", "--path", "dist/app.ipa", "--dry-run", "--json"], {
       cwd: appDir,
@@ -123,6 +177,109 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
     assert.equal(Array.isArray(releasePayload.releases), true);
     assert.equal(releasePayload.releases.length, 1);
     assert.equal(releasePayload.releases[0].platform, "ios");
+    assert.equal(releasePayload.releases[0].version, "1.0.0");
+    assert.equal(releasePayload.releases[0].buildNumber, "13");
+    assert.equal(releasePayload.releases[0].changedFiles.length, 3);
+
+    const appJsonAfterDryRun = JSON.parse(await readFile(path.join(appDir, "app.json"), "utf8"));
+    assert.equal(appJsonAfterDryRun.expo.ios.buildNumber, "7");
+    const appConfigAfterDryRun = await readFile(path.join(appDir, "app.config.ts"), "utf8");
+    assert.match(appConfigAfterDryRun, /buildNumber: "3"/);
+    const plistAfterDryRun = await readFile(path.join(appDir, "ios", "SmokeApp", "Info.plist"), "utf8");
+    assert.equal(plistAfterDryRun.includes("<string>12</string>"), true);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("cli smoke: app.config-only hybrid detection and missing release profile", async () => {
+  const sandbox = await mkdtemp(path.join(os.tmpdir(), "feas-config-smoke-"));
+  const appDir = path.join(sandbox, "app");
+  const feasHome = path.join(sandbox, "feas-home");
+
+  try {
+    await mkdir(appDir, { recursive: true });
+
+    await writeFile(
+      path.join(appDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "config-only-app",
+          private: true,
+          dependencies: {
+            expo: "^53.0.0",
+            "react-native": "0.79.0",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await writeFile(
+      path.join(appDir, "eas.json"),
+      JSON.stringify(
+        {
+          build: {
+            production: {
+              ios: {},
+              android: {},
+            },
+          },
+          submit: {
+            production: {
+              ios: {},
+              android: {},
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await writeFile(
+      path.join(appDir, "app.config.ts"),
+      `export default {
+  expo: {
+    name: "Config Only App",
+    version: "2.3.4",
+    ios: {
+      bundleIdentifier: "com.example.configonly",
+      buildNumber: "5",
+    },
+    android: {
+      package: "com.example.configonly",
+      versionCode: 9,
+    },
+  },
+};
+`,
+      "utf8",
+    );
+
+    const initResult = runFeas(["init"], { cwd: appDir, feasHome });
+    assert.equal(initResult.status, 0, `init failed: ${initResult.stderr}`);
+
+    const configResult = runFeas(["config", "--json"], { cwd: appDir, feasHome });
+    assert.equal(configResult.status, 0, `config failed: ${configResult.stderr}`);
+    const config = JSON.parse(configResult.stdout);
+    assert.equal(config.project.displayName, "Config Only App");
+    assert.equal(config.project.projectType, "hybrid");
+    assert.equal(config.project.nativeFolders.ios, false);
+    assert.equal(config.project.nativeFolders.android, false);
+    assert.equal(config.project.configSources.length, 1);
+    assert.equal(config.project.bundleIdentifiers.ios, "com.example.configonly");
+    assert.equal(config.project.bundleIdentifiers.android, "com.example.configonly");
+
+    const missingProfileResult = runFeas(["release", "ios", "--profile", "staging", "--dry-run", "--skip-submit", "--json"], {
+      cwd: appDir,
+      feasHome,
+    });
+    assert.notEqual(missingProfileResult.status, 0);
+    assert.match(missingProfileResult.stderr, /Build profile 'staging' not found in eas\.json\. Create build\.staging before running release\./);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }
