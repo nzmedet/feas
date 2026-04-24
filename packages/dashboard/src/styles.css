@@ -222,6 +222,13 @@ button:disabled {
   padding: 0 16px;
 }
 
+.submit-grid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 10px;
+  padding: 0 16px 10px;
+}
+
 .notice {
   margin: 10px 16px 0;
   padding: 9px 11px;
@@ -398,6 +405,10 @@ pre {
 @media (max-width: 1140px) {
   .actions-grid {
     grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+
+  .submit-grid {
+    grid-template-columns: 1fr;
   }
 
   .metadata-grid,

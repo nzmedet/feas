@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type View = "overview" | "builds" | "releases" | "submissions" | "doctor" | "metadata" | "credentials" | "logs";
 type RunPlatform = "all" | "ios" | "android";
 type MetadataPlatform = "ios" | "android";
+type SubmitPlatform = "ios" | "android";
 
 type Project = {
   id: string;
@@ -134,6 +135,8 @@ export function App() {
   const [runDryRun, setRunDryRun] = useState<boolean>(true);
   const [skipSubmit, setSkipSubmit] = useState<boolean>(false);
   const [metadataPlatform, setMetadataPlatform] = useState<MetadataPlatform>("ios");
+  const [submitPlatform, setSubmitPlatform] = useState<SubmitPlatform>("ios");
+  const [submitPath, setSubmitPath] = useState<string>("");
   const [iosKeyId, setIosKeyId] = useState<string>("");
   const [iosIssuerId, setIosIssuerId] = useState<string>("");
   const [iosPrivateKeyPath, setIosPrivateKeyPath] = useState<string>("");
@@ -282,6 +285,20 @@ export function App() {
     });
   }, [project, runAction, token, runPlatform, runProfile, runDryRun, skipSubmit]);
 
+  const handleRunSubmit = useCallback(async () => {
+    if (!project || !submitPath.trim()) {
+      return;
+    }
+    await runAction("Submit", async () => {
+      await apiWrite(`/api/projects/${project.id}/submissions`, token, "POST", {
+        platform: submitPlatform,
+        profile: runProfile || undefined,
+        path: submitPath.trim(),
+        dryRun: runDryRun,
+      });
+    });
+  }, [project, runAction, token, submitPlatform, runProfile, submitPath, runDryRun]);
+
   const handleMetadataAction = useCallback(
     async (mode: "pull" | "push" | "validate") => {
       if (!project) {
@@ -414,12 +431,32 @@ export function App() {
                 Skip submit
               </label>
             </div>
+            <div className="submit-grid">
+              <div className="control">
+                <label>Submit platform</label>
+                <select value={submitPlatform} onChange={(e) => setSubmitPlatform(e.target.value as SubmitPlatform)}>
+                  <option value="ios">ios</option>
+                  <option value="android">android</option>
+                </select>
+              </div>
+              <div className="control">
+                <label>Submit artifact path</label>
+                <input
+                  value={submitPath}
+                  onChange={(e) => setSubmitPath(e.target.value)}
+                  placeholder="dist/app.ipa or dist/app.aab"
+                />
+              </div>
+            </div>
             <div className="button-row">
               <button disabled={!!actionBusy} onClick={() => void handleRunDoctor()}>
                 {actionBusy === "Doctor" ? "Running doctor..." : "Run Doctor"}
               </button>
               <button disabled={!!actionBusy} onClick={() => void handleRunBuild()}>
                 {actionBusy === "Build" ? "Running build..." : "Run Build"}
+              </button>
+              <button disabled={!!actionBusy || !submitPath.trim()} onClick={() => void handleRunSubmit()}>
+                {actionBusy === "Submit" ? "Running submit..." : "Run Submit"}
               </button>
               <button disabled={!!actionBusy} onClick={() => void handleRunRelease()}>
                 {actionBusy === "Release" ? "Running release..." : "Run Release"}

@@ -7,6 +7,7 @@ import {
   configureIosCredentials,
   runBuild,
   runDoctor,
+  runSubmit,
   runRelease,
   runMetadataPull,
   runMetadataPush,
@@ -558,6 +559,36 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     }
     const submissions = await getProjectSubmissions(paths.databasePath);
     return { submissions };
+  });
+
+  app.post("/api/projects/:id/submissions", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = (request.body ?? {}) as {
+      platform?: "ios" | "android";
+      profile?: string;
+      path?: string;
+      dryRun?: boolean;
+    };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    if (!body.platform || !body.path) {
+      reply.code(400).send({ error: "platform_and_path_required" });
+      return;
+    }
+
+    const result = await runSubmit({
+      cwd: projectRoot,
+      platform: body.platform,
+      path: body.path,
+      profile: body.profile,
+      dryRun: body.dryRun,
+    });
+    return result;
   });
 
   app.get("/api/projects/:id/doctor", async (request, reply) => {
