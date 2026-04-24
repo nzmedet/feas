@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initFeasProject, resolveFeasConfig } from "@feas/core";
+import { initFeasProject, resolveFeasConfig, runDoctor } from "@feas/core";
 import { Command } from "commander";
 
 const program = new Command();
@@ -53,6 +53,55 @@ program
     process.stdout.write(`Profile: ${profile}\n`);
     process.stdout.write(`Platform iOS: ${platforms.ios ? "yes" : "no"}\n`);
     process.stdout.write(`Platform Android: ${platforms.android ? "yes" : "no"}\n`);
+  });
+
+program
+  .command("doctor")
+  .description("Check if the machine and project are release-ready")
+  .argument("[platform]", "Target platform: ios | android")
+  .option("--profile <profile>", "EAS profile to use", "production")
+  .option("--json", "Print JSON output", false)
+  .action(async (platformArg, options) => {
+    const normalizedPlatform =
+      platformArg === "ios" || platformArg === "android" ? platformArg : ("all" as const);
+
+    if (platformArg && normalizedPlatform === "all") {
+      throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
+    }
+
+    const result = await runDoctor({
+      cwd: process.cwd(),
+      profile: options.profile,
+      platform: normalizedPlatform,
+    });
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
+    process.stdout.write(`Doctor profile: ${result.profile}\n`);
+    process.stdout.write(`Project: ${result.project.displayName}\n`);
+    process.stdout.write(`Root: ${result.project.rootPath}\n`);
+    process.stdout.write("\n");
+
+    for (const check of result.checks) {
+      const icon = check.status === "pass" ? "PASS" : check.status === "warn" ? "WARN" : check.status === "fail" ? "FAIL" : "SKIP";
+      process.stdout.write(`[${icon}] ${check.category.toUpperCase()} - ${check.name}\n`);
+      process.stdout.write(`  ${check.message}\n`);
+      if (check.fixCommand) {
+        process.stdout.write(`  Fix: ${check.fixCommand}\n`);
+      }
+    }
+
+    process.stdout.write("\n");
+    process.stdout.write(
+      `Summary: pass=${result.summary.pass} warn=${result.summary.warn} fail=${result.summary.fail} skip=${result.summary.skip}\n`,
+    );
+
+    if (result.summary.fail > 0) {
+      process.exitCode = 1;
+    }
   });
 
 async function main() {

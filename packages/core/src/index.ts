@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 export interface FeasProjectInfo {
   rootPath: string;
@@ -30,6 +32,37 @@ export interface InitFeasProjectResult {
   projectPath: string;
   feasHomePath: string;
   detection: FeasProjectInfo;
+}
+
+export type DoctorPlatform = "all" | "ios" | "android";
+export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
+
+export interface DoctorCheck {
+  id: string;
+  category: "general" | "ios" | "android";
+  name: string;
+  status: DoctorStatus;
+  message: string;
+  fixCommand?: string;
+}
+
+export interface RunDoctorOptions {
+  cwd: string;
+  platform?: DoctorPlatform;
+  profile?: string;
+}
+
+export interface RunDoctorResult {
+  platform: DoctorPlatform;
+  profile: string;
+  project: FeasProjectInfo;
+  checks: DoctorCheck[];
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+  };
 }
 
 interface EasBuildProfile {
@@ -72,6 +105,8 @@ interface FeasGlobalConfig {
     }
   >;
 }
+
+const execFileAsync = promisify(execFile);
 
 function getFeasVersion(): string {
   return "0.1.0";
@@ -224,6 +259,30 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
     },
     easConfig,
   };
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await execFileAsync("which", [command]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseMajor(version: string): number {
+  const major = Number(version.split(".")[0]);
+  return Number.isFinite(major) ? major : 0;
+}
+
+function summarizeChecks(checks: DoctorCheck[]): RunDoctorResult["summary"] {
+  return checks.reduce(
+    (acc, check) => {
+      acc[check.status] += 1;
+      return acc;
+    },
+    { pass: 0, warn: 0, fail: 0, skip: 0 },
+  );
 }
 
 function buildInternalConfig(result: {
@@ -381,6 +440,232 @@ export async function resolveFeasConfig(options: { cwd: string; profile?: string
       homePath: getFeasHomeDir(),
       version: getFeasVersion(),
     },
+  };
+}
+
+export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorResult> {
+  const profile = options.profile ?? "production";
+  const platform = options.platform ?? "all";
+
+  const { detection, easConfig } = await detectProject(options.cwd);
+  const checks: DoctorCheck[] = [];
+
+  const nodeVersion = process.versions.node;
+  const nodeMajor = parseMajor(nodeVersion);
+  checks.push({
+    id: "general_node_version",
+    category: "general",
+    name: "Node version",
+    status: nodeMajor >= 20 ? "pass" : "fail",
+    message: nodeMajor >= 20 ? `Node ${nodeVersion} is supported.` : `Node ${nodeVersion} detected. FEAS requires Node 20+ for MVP.`,
+    fixCommand: nodeMajor >= 20 ? undefined : "Install Node 20+ and retry.",
+  });
+
+  const hasPnpmLock = await fileExists(path.join(detection.rootPath, "pnpm-lock.yaml"));
+  const hasNpmLock = await fileExists(path.join(detection.rootPath, "package-lock.json"));
+  const hasYarnLock = await fileExists(path.join(detection.rootPath, "yarn.lock"));
+  const hasBunLock = await fileExists(path.join(detection.rootPath, "bun.lockb"));
+  const lockCount = [hasPnpmLock, hasNpmLock, hasYarnLock, hasBunLock].filter(Boolean).length;
+  checks.push({
+    id: "general_package_manager_lock",
+    category: "general",
+    name: "Package manager lockfile",
+    status: lockCount === 0 ? "warn" : lockCount > 1 ? "warn" : "pass",
+    message:
+      lockCount === 0
+        ? "No lockfile detected. Dependency installs may not be reproducible."
+        : lockCount > 1
+          ? "Multiple lockfiles detected. Choose one package manager to avoid drift."
+          : "Single lockfile detected.",
+    fixCommand: lockCount <= 1 ? undefined : "Remove extra lockfiles and keep one package manager.",
+  });
+
+  const easProfileExists = Boolean(easConfig.build?.[profile]);
+  checks.push({
+    id: "general_profile_exists",
+    category: "general",
+    name: "EAS build profile",
+    status: easProfileExists ? "pass" : "fail",
+    message: easProfileExists ? `build.${profile} found in eas.json.` : `build.${profile} missing in eas.json.`,
+    fixCommand: easProfileExists ? undefined : `Add build.${profile} to eas.json or run with --profile <existing-profile>.`,
+  });
+
+  checks.push({
+    id: "general_project_root",
+    category: "general",
+    name: "Project root",
+    status: "pass",
+    message: `Resolved project root at ${detection.rootPath}.`,
+  });
+
+  checks.push({
+    id: "general_expo_config",
+    category: "general",
+    name: "Expo config",
+    status: detection.expoConfigPath ? "pass" : "warn",
+    message: detection.expoConfigPath
+      ? `Expo config detected at ${detection.expoConfigPath}.`
+      : "No app.json/app.config.* found. Some FEAS features may be limited.",
+  });
+
+  const hasGitBinary = await commandExists("git");
+  if (!hasGitBinary) {
+    checks.push({
+      id: "general_git_installed",
+      category: "general",
+      name: "Git installed",
+      status: "fail",
+      message: "git command not found.",
+      fixCommand: "Install git and retry.",
+    });
+  } else {
+    checks.push({
+      id: "general_git_installed",
+      category: "general",
+      name: "Git installed",
+      status: "pass",
+      message: "git command detected.",
+    });
+
+    try {
+      await execFileAsync("git", ["-C", detection.rootPath, "rev-parse", "--is-inside-work-tree"]);
+      checks.push({
+        id: "general_git_repo",
+        category: "general",
+        name: "Git repository",
+        status: "pass",
+        message: "Project is inside a git repository.",
+      });
+
+      const { stdout } = await execFileAsync("git", ["-C", detection.rootPath, "status", "--porcelain"]);
+      checks.push({
+        id: "general_git_clean",
+        category: "general",
+        name: "Git working tree",
+        status: stdout.trim().length === 0 ? "pass" : "warn",
+        message: stdout.trim().length === 0 ? "Working tree is clean." : "Working tree has uncommitted changes.",
+      });
+    } catch {
+      checks.push({
+        id: "general_git_repo",
+        category: "general",
+        name: "Git repository",
+        status: "warn",
+        message: "Project is not inside a git repository.",
+      });
+    }
+  }
+
+  if (platform === "all" || platform === "ios") {
+    const isMac = process.platform === "darwin";
+    checks.push({
+      id: "ios_macos_required",
+      category: "ios",
+      name: "macOS required",
+      status: isMac ? "pass" : "fail",
+      message: isMac ? "Running on macOS." : "iOS workflows require macOS.",
+      fixCommand: isMac ? undefined : "Run FEAS iOS workflows on macOS.",
+    });
+
+    checks.push({
+      id: "ios_platform_detected",
+      category: "ios",
+      name: "iOS platform detected",
+      status: detection.platforms.ios ? "pass" : "fail",
+      message: detection.platforms.ios ? "iOS configuration detected." : "No iOS configuration detected.",
+      fixCommand: detection.platforms.ios ? undefined : "Add iOS native config or iOS entries in eas.json/app config.",
+    });
+
+    if (isMac) {
+      const xcodeInstalled = await commandExists("xcodebuild");
+      checks.push({
+        id: "ios_xcode_installed",
+        category: "ios",
+        name: "Xcode build tools",
+        status: xcodeInstalled ? "pass" : "fail",
+        message: xcodeInstalled ? "xcodebuild detected." : "xcodebuild not found.",
+        fixCommand: xcodeInstalled ? undefined : "Install Xcode and run xcode-select --switch.",
+      });
+    } else {
+      checks.push({
+        id: "ios_xcode_installed",
+        category: "ios",
+        name: "Xcode build tools",
+        status: "skip",
+        message: "Skipped because platform is not macOS.",
+      });
+    }
+
+    const rubyInstalled = await commandExists("ruby");
+    checks.push({
+      id: "ios_ruby_installed",
+      category: "ios",
+      name: "Ruby installed",
+      status: rubyInstalled ? "pass" : "fail",
+      message: rubyInstalled ? "ruby command detected." : "ruby command not found.",
+      fixCommand: rubyInstalled ? undefined : "Install Ruby before running iOS release commands.",
+    });
+
+    const fastlaneInstalled = await commandExists("fastlane");
+    checks.push({
+      id: "ios_fastlane_installed",
+      category: "ios",
+      name: "Fastlane installed",
+      status: fastlaneInstalled ? "pass" : "fail",
+      message: fastlaneInstalled ? "fastlane command detected." : "fastlane command not found.",
+      fixCommand: fastlaneInstalled ? undefined : "Install Fastlane and retry.",
+    });
+  }
+
+  if (platform === "all" || platform === "android") {
+    checks.push({
+      id: "android_platform_detected",
+      category: "android",
+      name: "Android platform detected",
+      status: detection.platforms.android ? "pass" : "fail",
+      message: detection.platforms.android ? "Android configuration detected." : "No Android configuration detected.",
+      fixCommand: detection.platforms.android ? undefined : "Add Android native config or Android entries in eas.json/app config.",
+    });
+
+    const javaInstalled = await commandExists("java");
+    checks.push({
+      id: "android_java_installed",
+      category: "android",
+      name: "Java installed",
+      status: javaInstalled ? "pass" : "fail",
+      message: javaInstalled ? "java command detected." : "java command not found.",
+      fixCommand: javaInstalled ? undefined : "Install Java (JDK 17+) before Android builds.",
+    });
+
+    const androidDirExists = await fileExists(path.join(detection.rootPath, "android"));
+    checks.push({
+      id: "android_project_exists",
+      category: "android",
+      name: "Android project folder",
+      status: androidDirExists ? "pass" : "warn",
+      message: androidDirExists ? "android/ directory exists." : "android/ directory not found (managed Expo without prebuild may still work later).",
+    });
+
+    const gradleWrapperExists =
+      (await fileExists(path.join(detection.rootPath, "gradlew"))) ||
+      (await fileExists(path.join(detection.rootPath, "android", "gradlew")));
+    const gradleInstalled = gradleWrapperExists || (await commandExists("gradle"));
+    checks.push({
+      id: "android_gradle_available",
+      category: "android",
+      name: "Gradle available",
+      status: gradleInstalled ? "pass" : "fail",
+      message: gradleInstalled ? "Gradle wrapper or gradle command detected." : "No Gradle wrapper and gradle command not found.",
+      fixCommand: gradleInstalled ? undefined : "Generate native Android project or install Gradle.",
+    });
+  }
+
+  return {
+    platform,
+    profile,
+    project: detection,
+    checks,
+    summary: summarizeChecks(checks),
   };
 }
 
