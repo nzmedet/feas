@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -75,6 +74,38 @@ async function promptRequired(label: string): Promise<string> {
   }
 }
 
+async function withProgress<T>(label: string, enabled: boolean, task: () => Promise<T>): Promise<T> {
+  if (!enabled) {
+    return task();
+  }
+
+  if (!process.stdout.isTTY) {
+    process.stdout.write(`${label}...\n`);
+    return task();
+  }
+
+  const frames = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"];
+  let index = 0;
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stdout.write(`\r${frames[index % frames.length]} ${label} (${elapsedSeconds}s)`);
+    index += 1;
+  }, 120);
+
+  try {
+    const result = await task();
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stdout.write(`\r✔ ${label} completed (${elapsedSeconds}s)\n`);
+    return result;
+  } catch (error) {
+    process.stdout.write(`\r✖ ${label} failed\n`);
+    throw error;
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 program
   .name("feas")
   .description("Local release automation for Expo and React Native apps.")
@@ -143,18 +174,27 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
     }
 
-    const result = await runBuild({
-      cwd: process.cwd(),
-      platform: platformArg,
-      profile: options.profile,
-      dryRun: options.dryRun,
-      allowPrebuild: options.prebuild,
-    });
-
     if (options.json) {
+      const result = await runBuild({
+        cwd: process.cwd(),
+        platform: platformArg,
+        profile: options.profile,
+        dryRun: options.dryRun,
+        allowPrebuild: options.prebuild,
+      });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
+
+    const result = await withProgress("Running build", true, () =>
+      runBuild({
+        cwd: process.cwd(),
+        platform: platformArg,
+        profile: options.profile,
+        dryRun: options.dryRun,
+        allowPrebuild: options.prebuild,
+      }),
+    );
 
     process.stdout.write(`Build profile: ${result.profile}\n`);
     process.stdout.write(`Project: ${result.project.displayName}\n`);
@@ -350,11 +390,9 @@ program
       throw new Error(`Invalid port '${options.port}'.`);
     }
 
-    const token = randomBytes(16).toString("hex");
     const dashboardDistPath = await resolveDashboardDistPath();
     const server = await startLocalApiServer({
       port: parsedPort,
-      token,
       dashboardDistPath,
     });
 
@@ -592,7 +630,7 @@ program
     process.stdout.write("\n");
 
     for (const check of result.checks) {
-      const icon = check.status === "pass" ? "PASS" : check.status === "warn" ? "WARN" : check.status === "fail" ? "FAIL" : "SKIP";
+      const icon = check.status === "pass" ? "☑" : check.status === "warn" ? "◩" : check.status === "fail" ? "☒" : "☐";
       process.stdout.write(`[${icon}] ${check.category.toUpperCase()} - ${check.name}\n`);
       process.stdout.write(`  ${check.message}\n`);
       if (check.fixCommand) {

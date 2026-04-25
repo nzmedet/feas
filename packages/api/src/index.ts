@@ -16,6 +16,7 @@ import {
   validateCredentials,
 } from "feas-core";
 import {
+  deleteBuildById,
   getBuildById,
   getProjectBuilds,
   getProjectDoctorChecks,
@@ -26,7 +27,7 @@ import {
 
 export interface StartLocalApiServerOptions {
   port: number;
-  token: string;
+  token?: string;
   dashboardDistPath?: string;
 }
 
@@ -375,7 +376,7 @@ function dashboardHtml(port: number, token: string): string {
 
 export async function startLocalApiServer(options: StartLocalApiServerOptions): Promise<LocalApiServerHandle> {
   const app = createApiServer();
-  const expectedToken = options.token;
+  const expectedToken = options.token?.trim();
   const dashboardDistPath = options.dashboardDistPath;
   const feasHome = getFeasHomeDir();
   const globalConfigPath = path.join(feasHome, "config.json");
@@ -389,8 +390,13 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     const queryToken = typeof request.query === "object" && request.query !== null ? (request.query as Record<string, unknown>).token : undefined;
     const providedToken = (typeof headerToken === "string" ? headerToken : undefined) ?? (typeof queryToken === "string" ? queryToken : undefined);
 
+    if (!expectedToken) {
+      return;
+    }
+
     if (providedToken !== expectedToken) {
       reply.code(401).send({ error: "unauthorized" });
+      return;
     }
   });
 
@@ -404,7 +410,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       }
     }
 
-    reply.type("text/html").send(dashboardHtml(options.port, expectedToken));
+    reply.type("text/html").send(dashboardHtml(options.port, expectedToken ?? ""));
   });
 
   app.get("/assets/*", async (request, reply) => {
@@ -535,6 +541,95 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       allowPrebuild: body.allowPrebuild,
     });
     return result;
+  });
+
+  app.post("/api/projects/:id/builds/:buildId/rebuild", async (request, reply) => {
+    const params = request.params as { id: string; buildId: string };
+    const body = (request.body ?? {}) as { dryRun?: boolean; allowPrebuild?: boolean };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+
+    const build = await getBuildById(paths.databasePath, params.buildId);
+    if (!build) {
+      reply.code(404).send({ error: "build_not_found" });
+      return;
+    }
+
+    const platform = build.platform === "ios" || build.platform === "android" ? build.platform : "all";
+    const result = await runBuild({
+      cwd: projectRoot,
+      platform,
+      profile: build.profile ?? undefined,
+      dryRun: body.dryRun,
+      allowPrebuild: body.allowPrebuild,
+    });
+    return result;
+  });
+
+  app.post("/api/projects/:id/builds/:buildId/submit", async (request, reply) => {
+    const params = request.params as { id: string; buildId: string };
+    const body = (request.body ?? {}) as { profile?: string; dryRun?: boolean };
+    const paths = getProjectPaths(feasHome, params.id);
+    const projectRoot = await readProjectRootFromProjectFile(paths);
+    if (!projectRoot) {
+      reply.code(404).send({ error: "project_not_found" });
+      return;
+    }
+
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+
+    const build = await getBuildById(paths.databasePath, params.buildId);
+    if (!build) {
+      reply.code(404).send({ error: "build_not_found" });
+      return;
+    }
+
+    if (!build.artifactPath) {
+      reply.code(400).send({ error: "build_artifact_not_available" });
+      return;
+    }
+
+    if (build.platform !== "ios" && build.platform !== "android") {
+      reply.code(400).send({ error: "build_platform_not_supported" });
+      return;
+    }
+
+    const result = await runSubmit({
+      cwd: projectRoot,
+      platform: build.platform,
+      path: build.artifactPath,
+      profile: body.profile ?? build.profile ?? undefined,
+      dryRun: body.dryRun,
+    });
+    return result;
+  });
+
+  app.delete("/api/projects/:id/builds/:buildId", async (request, reply) => {
+    const params = request.params as { id: string; buildId: string };
+    const paths = getProjectPaths(feasHome, params.id);
+    if (!(await fileExists(paths.databasePath))) {
+      reply.code(404).send({ error: "project_database_not_found" });
+      return;
+    }
+
+    const removed = await deleteBuildById(paths.databasePath, params.buildId);
+    if (!removed) {
+      reply.code(404).send({ error: "build_not_found" });
+      return;
+    }
+    return { deleted: true, id: params.buildId };
   });
 
   app.get("/api/projects/:id/releases", async (request, reply) => {
@@ -863,7 +958,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
   });
 
   return {
-    url: `http://localhost:${options.port}?token=${expectedToken}`,
+    url: expectedToken ? `http://localhost:${options.port}?token=${expectedToken}` : `http://localhost:${options.port}`,
     close: async () => {
       await app.close();
     },

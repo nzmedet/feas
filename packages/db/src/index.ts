@@ -296,8 +296,17 @@ export async function getProjectDoctorChecks(databasePath: string, limit = 100):
 > {
   const prisma = createPrismaClient(databasePath);
   try {
-    const rows = await prisma.doctorCheck.findMany({
+    const latest = await prisma.doctorCheck.findFirst({
       orderBy: { checkedAt: "desc" },
+      select: { checkedAt: true },
+    });
+    if (!latest) {
+      return [];
+    }
+
+    const rows = await prisma.doctorCheck.findMany({
+      where: { checkedAt: latest.checkedAt },
+      orderBy: [{ category: "asc" }, { name: "asc" }],
       take: limit,
     });
     return rows.map((row) => ({
@@ -334,6 +343,18 @@ export async function getBuildById(databasePath: string, id: string): Promise<Pr
       logPath: row.logPath,
       errorMessage: row.errorMessage,
     };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function deleteBuildById(databasePath: string, id: string): Promise<boolean> {
+  const prisma = createPrismaClient(databasePath);
+  try {
+    const result = await prisma.build.deleteMany({
+      where: { id },
+    });
+    return result.count > 0;
   } finally {
     await prisma.$disconnect();
   }
