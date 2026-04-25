@@ -1214,7 +1214,10 @@ async function writeInternalFastlaneFiles(projectPath: string): Promise<void> {
   const appfilePath = path.join(fastlaneDir, "Appfile");
   const pluginfilePath = path.join(fastlaneDir, "Pluginfile");
 
-  const fastfileContent = `default_platform(:ios)
+  const fastfileContent = `require "json"
+require "shellwords"
+
+default_platform(:ios)
 
 platform :ios do
   lane :build do
@@ -1286,24 +1289,28 @@ platform :ios do
     key_id = ENV["FEAS_IOS_KEY_ID"]
     issuer_id = ENV["FEAS_IOS_ISSUER_ID"]
     key_path = ENV["FEAS_IOS_API_KEY_PATH"]
+    app_identifier = ENV["FEAS_IOS_APP_IDENTIFIER"]
     UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
     UI.user_error!("Missing FEAS_IOS_KEY_ID for metadata pull.") unless key_id
     UI.user_error!("Missing FEAS_IOS_ISSUER_ID for metadata pull.") unless issuer_id
     UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for metadata pull.") unless key_path
+    UI.user_error!("Missing FEAS_IOS_APP_IDENTIFIER for metadata pull.") unless app_identifier
 
-    app_store_connect_api_key(
+    api_key_json = JSON.generate({
       key_id: key_id,
       issuer_id: issuer_id,
       key_filepath: key_path
-    )
-
-    deliver(
-      metadata_path: metadata_path,
-      screenshots_path: File.join(metadata_path, "screenshots"),
-      skip_screenshots: true,
-      force: true,
-      download_metadata: true
-    )
+    })
+    args = [
+      "fastlane", "deliver", "download_metadata",
+      "--api_key", api_key_json,
+      "--app_identifier", app_identifier,
+      "--metadata_path", metadata_path,
+      "--screenshots_path", File.join(metadata_path, "screenshots"),
+      "--skip_screenshots", "true",
+      "--force", "true"
+    ]
+    sh(args.shelljoin)
   end
 
   lane :metadata_push do
@@ -1311,10 +1318,12 @@ platform :ios do
     key_id = ENV["FEAS_IOS_KEY_ID"]
     issuer_id = ENV["FEAS_IOS_ISSUER_ID"]
     key_path = ENV["FEAS_IOS_API_KEY_PATH"]
+    app_identifier = ENV["FEAS_IOS_APP_IDENTIFIER"]
     UI.user_error!("FEAS_METADATA_PATH is required.") unless metadata_path
     UI.user_error!("Missing FEAS_IOS_KEY_ID for metadata push.") unless key_id
     UI.user_error!("Missing FEAS_IOS_ISSUER_ID for metadata push.") unless issuer_id
     UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for metadata push.") unless key_path
+    UI.user_error!("Missing FEAS_IOS_APP_IDENTIFIER for metadata push.") unless app_identifier
 
     app_store_connect_api_key(
       key_id: key_id,
@@ -1323,6 +1332,7 @@ platform :ios do
     )
 
     deliver(
+      app_identifier: app_identifier,
       metadata_path: metadata_path,
       screenshots_path: File.join(metadata_path, "screenshots"),
       skip_screenshots: true,
@@ -2276,6 +2286,7 @@ async function runMetadataFastlane(options: {
   const startedAt = new Date();
   const timestamp = timestampForFileName(startedAt);
   const id = randomUUID();
+  await writeInternalFastlaneFiles(options.projectPath);
   const fastfilePath = path.join(options.projectPath, "fastlane", "Fastfile");
   const logPath = path.join(options.projectPath, "logs", "metadata", `metadata-${timestamp}-${options.mode}-${options.platform}-${id}.log`);
   await fs.mkdir(path.dirname(logPath), { recursive: true });
@@ -2286,13 +2297,15 @@ async function runMetadataFastlane(options: {
     const keyId = await secretStore.get(credentialsKey(options.projectId, "ios", "key_id"));
     const issuerId = await secretStore.get(credentialsKey(options.projectId, "ios", "issuer_id"));
     const privateKeyPath = await secretStore.get(credentialsKey(options.projectId, "ios", "private_key_path"));
-    if (!keyId || !issuerId || !privateKeyPath) {
+    const appIdentifier = options.internalConfig.platforms.ios?.bundleIdentifier ?? options.detection.bundleIdentifiers.ios;
+    if (!keyId || !issuerId || !privateKeyPath || !appIdentifier) {
       throw new Error("Missing iOS metadata credentials. Run `feas credentials ios ...` or set FEAS_SECRET_* values.");
     }
     env = {
       FEAS_IOS_KEY_ID: keyId,
       FEAS_IOS_ISSUER_ID: issuerId,
       FEAS_IOS_API_KEY_PATH: privateKeyPath,
+      FEAS_IOS_APP_IDENTIFIER: appIdentifier,
     };
   } else {
     const serviceAccountPath = await secretStore.get(credentialsKey(options.projectId, "android", "service_account_path"));
