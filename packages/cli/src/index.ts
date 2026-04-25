@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,34 @@ import {
 import { Command } from "commander";
 
 const program = new Command();
+
+function resolveCliVersion(): string {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(currentDir, "../package.json"),
+    path.resolve(currentDir, "../../package.json"),
+    path.resolve(currentDir, "../../../package.json"),
+  ];
+
+  let fallbackVersion: string | null = null;
+  for (const candidate of candidates) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = JSON.parse(raw) as { name?: unknown; version?: unknown };
+      const version = typeof parsed.version === "string" ? parsed.version : null;
+      if (version && !fallbackVersion) {
+        fallbackVersion = version;
+      }
+      if (parsed.name === "@nzmedet/feas" && version) {
+        return version;
+      }
+    } catch {
+      // Continue scanning parent package.json files.
+    }
+  }
+
+  return fallbackVersion ?? "0.0.0";
+}
 
 async function directoryExists(targetPath: string): Promise<boolean> {
   try {
@@ -158,7 +186,7 @@ async function withProgressStages<T>(options: {
 program
   .name("feas")
   .description("Local release automation for Expo and React Native apps.")
-  .version("0.1.0");
+  .version(resolveCliVersion());
 
 program
   .command("init")
