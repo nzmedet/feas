@@ -144,14 +144,6 @@ If your npm setup skipped install scripts, run:
 prisma generate --schema "$(npm root -g)/@nzmedet/feas/packages/db/prisma/schema.prisma"
 ```
 
-### Version mismatch after publish
-
-Force specific install:
-
-```bash
-npm install -g @nzmedet/feas@<version> --force
-```
-
 ## Development
 
 Contributor instructions are in [DEVELOPMENT.md](./DEVELOPMENT.md).
