@@ -486,6 +486,20 @@ async function fileExists(targetPath: string): Promise<boolean> {
   }
 }
 
+function resolveInputPath(cwd: string, inputPath: string): string {
+  const trimmed = inputPath.trim();
+  if (!trimmed) {
+    return path.resolve(cwd, trimmed);
+  }
+  if (trimmed === "~") {
+    return os.homedir();
+  }
+  if (trimmed.startsWith("~/")) {
+    return path.join(os.homedir(), trimmed.slice(2));
+  }
+  return path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+}
+
 async function readJsonFile<T>(filePath: string): Promise<T> {
   const raw = await fs.readFile(filePath, "utf8");
   return JSON.parse(raw) as T;
@@ -2458,7 +2472,7 @@ export async function configureIosCredentials(options: ConfigureIosCredentialsOp
   const store = getSecretStore();
   let keyId = options.keyId;
   let issuerId = options.issuerId;
-  let privateKeyPath = options.privateKeyPath ? path.resolve(options.cwd, options.privateKeyPath) : undefined;
+  let privateKeyPath = options.privateKeyPath ? resolveInputPath(options.cwd, options.privateKeyPath) : undefined;
 
   if (options.use) {
     assertCredentialProfileName(options.use);
@@ -2497,7 +2511,7 @@ export async function configureAndroidCredentials(options: ConfigureAndroidCrede
   }
 
   const store = getSecretStore();
-  let serviceAccountPath = options.serviceAccountPath ? path.resolve(options.cwd, options.serviceAccountPath) : undefined;
+  let serviceAccountPath = options.serviceAccountPath ? resolveInputPath(options.cwd, options.serviceAccountPath) : undefined;
 
   if (options.use) {
     assertCredentialProfileName(options.use);
