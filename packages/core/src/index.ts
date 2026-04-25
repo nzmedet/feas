@@ -1216,6 +1216,7 @@ async function writeInternalFastlaneFiles(projectPath: string): Promise<void> {
 
   const fastfileContent = `require "json"
 require "shellwords"
+require "tmpdir"
 
 default_platform(:ios)
 
@@ -1296,21 +1297,27 @@ platform :ios do
     UI.user_error!("Missing FEAS_IOS_API_KEY_PATH for metadata pull.") unless key_path
     UI.user_error!("Missing FEAS_IOS_APP_IDENTIFIER for metadata pull.") unless app_identifier
 
-    api_key_json = JSON.generate({
+    api_key_path = File.join(Dir.tmpdir, "feas-asc-api-key-#{Time.now.to_i}-#{rand(1_000_000)}.json")
+    File.write(api_key_path, JSON.generate({
       key_id: key_id,
       issuer_id: issuer_id,
       key_filepath: key_path
-    })
-    args = [
-      "fastlane", "deliver", "download_metadata",
-      "--api_key", api_key_json,
-      "--app_identifier", app_identifier,
-      "--metadata_path", metadata_path,
-      "--screenshots_path", File.join(metadata_path, "screenshots"),
-      "--skip_screenshots", "true",
-      "--force", "true"
-    ]
-    sh(args.shelljoin)
+    }))
+
+    begin
+      args = [
+        "fastlane", "deliver", "download_metadata",
+        "--api_key_path", api_key_path,
+        "--app_identifier", app_identifier,
+        "--metadata_path", metadata_path,
+        "--screenshots_path", File.join(metadata_path, "screenshots"),
+        "--skip_screenshots", "true",
+        "--force", "true"
+      ]
+      sh(args.shelljoin)
+    ensure
+      File.delete(api_key_path) if File.exist?(api_key_path)
+    end
   end
 
   lane :metadata_push do
