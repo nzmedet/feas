@@ -9,9 +9,9 @@
     "dev": "pnpm --filter feas-cli dev",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
-    "test": "node --test tests/smoke/*.test.mjs tests/integration/*.test.mjs",
-    "test:smoke": "node --test tests/smoke/*.test.mjs",
-    "test:integration": "node --test tests/integration/*.test.mjs",
+    "test": "pnpm --filter feas-db build && pnpm --filter feas-core build && pnpm --filter feas-api build && pnpm --filter feas-cli build && node --test tests/smoke/*.test.mjs tests/integration/*.test.mjs",
+    "test:smoke": "pnpm --filter feas-cli build && node --test tests/smoke/*.test.mjs",
+    "test:integration": "pnpm --filter feas-db build && pnpm --filter feas-core build && pnpm --filter feas-api build && pnpm --filter feas-cli build && node --test tests/integration/*.test.mjs",
     "db:generate": "pnpm --filter feas-db db:generate",
     "build:npm": "node scripts/build-npm.mjs",
     "postinstall": "prisma generate --schema ./packages/db/prisma/schema.prisma"

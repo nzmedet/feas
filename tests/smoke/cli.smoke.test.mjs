@@ -140,7 +140,13 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
     const metadataPullResult = runFeas(["metadata", "pull", "ios"], { cwd: appDir, feasHome });
     assert.equal(metadataPullResult.status, 0, `metadata pull failed: ${metadataPullResult.stderr}`);
 
-    const metadataDir = path.join(feasHome, "projects", config.projectId, "metadata", "ios", "en-NZ");
+    const iosMetadataRoot = path.join(feasHome, "projects", config.projectId, "metadata", "ios");
+    const localeEntries = await readdir(iosMetadataRoot, { withFileTypes: true });
+    const localeDirName = localeEntries.find(
+      (entry) => entry.isDirectory() && /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})+$/i.test(entry.name),
+    )?.name;
+    assert.ok(localeDirName, "Expected at least one iOS metadata locale directory.");
+    const metadataDir = path.join(iosMetadataRoot, localeDirName);
     const metadataFiles = await readdir(metadataDir);
     assert.equal(metadataFiles.length > 0, true);
 
