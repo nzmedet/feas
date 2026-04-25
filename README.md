@@ -7,9 +7,10 @@ Runs entirely on your machine, so you use your own local build/signing toolchain
 
 FEAS gives you:
 - CLI (`feas`)
-- Local dashboard (`feas open`)
+- Local dashboard (`feas open`) to manage all apps (build/submit)
 - Local metadata/build/release tooling with your own machine credentials
 - Build number/versionCode bumping during release workflows (`--no-bump` to disable)
+- App build/release/deployment (using fastlane)
 
 ## Install
 
@@ -27,7 +28,7 @@ feas --help
 ## Requirements
 
 - Node.js 20+
-- A project with `package.json` and `eas.json`
+- A react-native/expo project with `package.json` and `eas.json`
 
 For real build/submit/metadata sync (`--real` or non-dry-run), you also need:
 - Fastlane
