@@ -23,7 +23,7 @@
   },
   "type": "module",
   "bin": {
-    "feas": "./bin/feas.js"
+    "feas": "bin/feas.js"
   },
   "files": [
     "bin",

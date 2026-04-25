@@ -1298,10 +1298,11 @@ platform :ios do
     UI.user_error!("Missing FEAS_IOS_APP_IDENTIFIER for metadata pull.") unless app_identifier
 
     api_key_path = File.join(Dir.tmpdir, "feas-asc-api-key-#{Time.now.to_i}-#{rand(1_000_000)}.json")
+    api_key_contents = File.binread(key_path)
     File.write(api_key_path, JSON.generate({
       key_id: key_id,
       issuer_id: issuer_id,
-      key_filepath: key_path
+      key: api_key_contents
     }))
 
     begin
