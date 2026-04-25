@@ -1,11 +1,15 @@
 # FEAS
 
 Local release automation for Expo and React Native apps.
+Think of FEAS as a free, local-first EAS CLI companion for build/submit/release workflows.
+Built for solo developers who need one place to manage App Store and Play Store operations across all Expo apps.
+Runs entirely on your machine, so you use your own local build/signing toolchain (Xcode, Android SDK/Gradle, Fastlane, credentials).
 
 FEAS gives you:
 - CLI (`feas`)
 - Local dashboard (`feas open`)
 - Local metadata/build/release tooling with your own machine credentials
+- Build number/versionCode bumping during release workflows (`--no-bump` to disable)
 
 ## Install
 
