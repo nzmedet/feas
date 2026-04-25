@@ -106,6 +106,55 @@ async function withProgress<T>(label: string, enabled: boolean, task: () => Prom
   }
 }
 
+function green(value: string): string {
+  if (!process.stdout.isTTY || process.env.NO_COLOR) {
+    return value;
+  }
+  return `\u001b[32m${value}\u001b[0m`;
+}
+
+function successLine(message: string): void {
+  process.stdout.write(`${green("✔")} ${message}\n`);
+}
+
+async function withProgressStages<T>(options: {
+  enabled?: boolean;
+  finalLabel: string;
+  stages: string[];
+  task: () => Promise<T>;
+}): Promise<T> {
+  const enabled = options.enabled ?? true;
+  if (!enabled || options.stages.length === 0) {
+    return withProgress(options.finalLabel, enabled, options.task);
+  }
+
+  if (!process.stdout.isTTY) {
+    return withProgress(options.stages[0], enabled, options.task);
+  }
+
+  const frames = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"];
+  let tick = 0;
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const stage = options.stages[Math.floor(tick / 8) % options.stages.length] ?? options.stages[0];
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stdout.write(`\r${frames[tick % frames.length]} ${stage} (${elapsedSeconds}s)`);
+    tick += 1;
+  }, 120);
+
+  try {
+    const result = await options.task();
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stdout.write(`\r${green("✔")} ${options.finalLabel} (${elapsedSeconds}s)\n`);
+    return result;
+  } catch (error) {
+    process.stdout.write(`\r✖ ${options.finalLabel} failed\n`);
+    throw error;
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 program
   .name("feas")
   .description("Local release automation for Expo and React Native apps.")
@@ -117,10 +166,14 @@ program
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--force", "Regenerate FEAS project state", false)
   .action(async (options) => {
-    const result = await initFeasProject({
-      cwd: process.cwd(),
-      profile: options.profile,
-      force: options.force,
+    const result = await withProgressStages({
+      finalLabel: "Project initialized",
+      stages: ["Detecting project", "Creating FEAS state", "Preparing local database"],
+      task: () => initFeasProject({
+        cwd: process.cwd(),
+        profile: options.profile,
+        force: options.force,
+      }),
     });
 
     process.stdout.write(`Initialized FEAS project: ${result.detection.displayName}\n`);
@@ -236,12 +289,16 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
 
-    const result = await runSubmit({
-      cwd: process.cwd(),
-      platform: platformArg,
-      path: options.path,
-      profile: options.profile,
-      dryRun: options.dryRun,
+    const result = await withProgressStages({
+      finalLabel: "Submit completed",
+      stages: ["Preparing submission", "Uploading to store", "Finalizing submission"],
+      task: () => runSubmit({
+        cwd: process.cwd(),
+        platform: platformArg,
+        path: options.path,
+        profile: options.profile,
+        dryRun: options.dryRun,
+      }),
     });
 
     if (options.json) {
@@ -287,14 +344,18 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
     }
 
-    const result = await runRelease({
-      cwd: process.cwd(),
-      platform: platformArg,
-      profile: options.profile,
-      dryRun: options.dryRun,
-      skipSubmit: options.skipSubmit,
-      noBump: options.noBump,
-      allowPrebuild: options.prebuild,
+    const result = await withProgressStages({
+      finalLabel: "Release completed",
+      stages: ["Preparing release", "Running build", "Submitting release"],
+      task: () => runRelease({
+        cwd: process.cwd(),
+        platform: platformArg,
+        profile: options.profile,
+        dryRun: options.dryRun,
+        skipSubmit: options.skipSubmit,
+        noBump: options.noBump,
+        allowPrebuild: options.prebuild,
+      }),
     });
 
     if (options.json) {
@@ -341,10 +402,14 @@ program
   .option("--raw", "Print raw log content", false)
   .option("--json", "Print JSON output", false)
   .action(async (options) => {
-    const result = await listLogs({
-      cwd: process.cwd(),
-      latest: options.latest,
-      id: options.id,
+    const result = await withProgressStages({
+      finalLabel: "Logs loaded",
+      stages: ["Loading logs"],
+      task: () => listLogs({
+        cwd: process.cwd(),
+        latest: options.latest,
+        id: options.id,
+      }),
     });
 
     if (options.json) {
@@ -417,9 +482,15 @@ metadata
     }
     let result;
     try {
-      result = await runMetadataPull({
-        cwd: process.cwd(),
-        platform: platformArg,
+      result = await withProgressStages({
+        finalLabel: "Metadata pull completed",
+        stages: options.real
+          ? ["Authenticating with store", "Pulling metadata", "Writing metadata files"]
+          : ["Preparing local metadata files"],
+        task: () => runMetadataPull({
+          cwd: process.cwd(),
+          platform: platformArg,
+        }),
       });
     } finally {
       if (previous === undefined) {
@@ -428,7 +499,8 @@ metadata
         process.env.FEAS_METADATA_REAL = previous;
       }
     }
-    process.stdout.write(`Metadata pulled for ${result.platform} into ${result.metadataRoot} (${result.mode ?? "local"})\n`);
+    successLine(`Successfully pulled ${result.mode === "real" ? "remote" : "local"} metadata for ${result.platform}.`);
+    process.stdout.write(`Metadata path: ${result.metadataRoot}\n`);
     if (result.logPath) {
       process.stdout.write(`Log: ${result.logPath}\n`);
     }
@@ -448,9 +520,15 @@ metadata
     }
     let result;
     try {
-      result = await runMetadataPush({
-        cwd: process.cwd(),
-        platform: platformArg,
+      result = await withProgressStages({
+        finalLabel: "Metadata push completed",
+        stages: options.real
+          ? ["Validating metadata", "Uploading metadata", "Finalizing push"]
+          : ["Validating local metadata"],
+        task: () => runMetadataPush({
+          cwd: process.cwd(),
+          platform: platformArg,
+        }),
       });
     } finally {
       if (previous === undefined) {
@@ -459,7 +537,8 @@ metadata
         process.env.FEAS_METADATA_REAL = previous;
       }
     }
-    process.stdout.write(`Metadata push ${result.mode === "real" ? "completed" : "validated"} for ${result.platform}. Files: ${result.files.length}\n`);
+    successLine(`${result.mode === "real" ? "Successfully pushed" : "Successfully validated"} metadata for ${result.platform}.`);
+    process.stdout.write(`Files: ${result.files.length}\n`);
     if (result.logPath) {
       process.stdout.write(`Log: ${result.logPath}\n`);
     }
@@ -472,11 +551,19 @@ metadata
     if (platformArg !== "ios" && platformArg !== "android") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
-    const result = await runMetadataValidate({
-      cwd: process.cwd(),
-      platform: platformArg,
+    const result = await withProgressStages({
+      finalLabel: "Metadata validation completed",
+      stages: ["Validating metadata files"],
+      task: () => runMetadataValidate({
+        cwd: process.cwd(),
+        platform: platformArg,
+      }),
     });
-    process.stdout.write(`Metadata validation for ${result.platform}: ${result.valid ? "valid" : "invalid"}\n`);
+    if (result.valid) {
+      successLine(`Metadata is valid for ${result.platform}.`);
+    } else {
+      process.stdout.write(`Metadata validation for ${result.platform}: invalid\n`);
+    }
     if (!result.valid) {
       for (const missing of result.missingFiles) {
         process.stdout.write(`  Missing: ${missing}\n`);
@@ -492,9 +579,13 @@ metadata
     if (platformArg !== "ios" && platformArg !== "android") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
-    const result = await runMetadataPull({
-      cwd: process.cwd(),
-      platform: platformArg,
+    const result = await withProgressStages({
+      finalLabel: "Metadata directory resolved",
+      stages: ["Resolving metadata directory"],
+      task: () => runMetadataPull({
+        cwd: process.cwd(),
+        platform: platformArg,
+      }),
     });
     process.stdout.write(`Metadata directory: ${result.metadataRoot}\n`);
   });
@@ -512,15 +603,19 @@ credentials
     const keyId = options.use ? options.keyId : options.keyId ?? await promptRequired("App Store Connect API Key ID");
     const issuerId = options.use ? options.issuerId : options.issuerId ?? await promptRequired("App Store Connect Issuer ID");
     const privateKeyPath = options.use ? options.privateKeyPath : options.privateKeyPath ?? await promptRequired("Path to App Store Connect .p8 key");
-    await configureIosCredentials({
-      cwd: process.cwd(),
-      keyId,
-      issuerId,
-      privateKeyPath,
-      saveAs: options.saveAs,
-      use: options.use,
+    await withProgressStages({
+      finalLabel: "iOS credentials configured",
+      stages: ["Saving iOS credentials"],
+      task: () => configureIosCredentials({
+        cwd: process.cwd(),
+        keyId,
+        issuerId,
+        privateKeyPath,
+        saveAs: options.saveAs,
+        use: options.use,
+      }),
     });
-    process.stdout.write(`iOS credentials ${options.use ? `attached from '${options.use}'` : "saved"}.\n`);
+    successLine(`iOS credentials ${options.use ? `attached from '${options.use}'` : "saved"}.`);
     if (options.saveAs) {
       process.stdout.write(`Reusable iOS profile saved as '${options.saveAs}'.\n`);
     }
@@ -535,13 +630,17 @@ credentials
     const serviceAccountPath = options.use
       ? options.serviceAccountPath
       : options.serviceAccountPath ?? await promptRequired("Path to Google Play service account JSON");
-    await configureAndroidCredentials({
-      cwd: process.cwd(),
-      serviceAccountPath,
-      saveAs: options.saveAs,
-      use: options.use,
+    await withProgressStages({
+      finalLabel: "Android credentials configured",
+      stages: ["Saving Android credentials"],
+      task: () => configureAndroidCredentials({
+        cwd: process.cwd(),
+        serviceAccountPath,
+        saveAs: options.saveAs,
+        use: options.use,
+      }),
     });
-    process.stdout.write(`Android credentials ${options.use ? `attached from '${options.use}'` : "saved"}.\n`);
+    successLine(`Android credentials ${options.use ? `attached from '${options.use}'` : "saved"}.`);
     if (options.saveAs) {
       process.stdout.write(`Reusable Android profile saved as '${options.saveAs}'.\n`);
     }
@@ -560,8 +659,12 @@ credentials
 credentials
   .command("validate")
   .action(async () => {
-    const result = await validateCredentials({
-      cwd: process.cwd(),
+    const result = await withProgressStages({
+      finalLabel: "Credentials validation completed",
+      stages: ["Validating credentials"],
+      task: () => validateCredentials({
+        cwd: process.cwd(),
+      }),
     });
 
     process.stdout.write(`Credentials for ${result.project.displayName}\n`);
@@ -588,12 +691,16 @@ program
   .description("Clean local FEAS build/runtime artifacts")
   .option("--all", "Remove entire local project state under ~/.feas/projects/<id>", false)
   .action(async (options) => {
-    const result = await cleanProject({
-      cwd: process.cwd(),
-      all: options.all,
+    const result = await withProgressStages({
+      finalLabel: "Cleanup completed",
+      stages: ["Cleaning local FEAS artifacts"],
+      task: () => cleanProject({
+        cwd: process.cwd(),
+        all: options.all,
+      }),
     });
 
-    process.stdout.write(`Clean completed for ${result.project.displayName}\n`);
+    successLine(`Clean completed for ${result.project.displayName}.`);
     for (const entry of result.removed) {
       process.stdout.write(`  removed: ${entry}\n`);
     }
@@ -613,10 +720,14 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
 
-    const result = await runDoctor({
-      cwd: process.cwd(),
-      profile: options.profile,
-      platform: normalizedPlatform,
+    const result = await withProgressStages({
+      finalLabel: "Doctor checks completed",
+      stages: ["Running doctor checks"],
+      task: () => runDoctor({
+        cwd: process.cwd(),
+        profile: options.profile,
+        platform: normalizedPlatform,
+      }),
     });
 
     if (options.json) {
