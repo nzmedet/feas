@@ -317,17 +317,21 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
 
-    const result = await withProgressStages({
-      finalLabel: "Submit completed",
-      stages: ["Preparing submission", "Uploading to store", "Finalizing submission"],
-      task: () => runSubmit({
+    const execute = () =>
+      runSubmit({
         cwd: process.cwd(),
         platform: platformArg,
         path: options.path,
         profile: options.profile,
         dryRun: options.dryRun,
-      }),
-    });
+      });
+    const result = options.json
+      ? await execute()
+      : await withProgressStages({
+          finalLabel: "Submit completed",
+          stages: ["Preparing submission", "Uploading to store", "Finalizing submission"],
+          task: execute,
+        });
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -372,10 +376,8 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
     }
 
-    const result = await withProgressStages({
-      finalLabel: "Release completed",
-      stages: ["Preparing release", "Running build", "Submitting release"],
-      task: () => runRelease({
+    const execute = () =>
+      runRelease({
         cwd: process.cwd(),
         platform: platformArg,
         profile: options.profile,
@@ -383,8 +385,14 @@ program
         skipSubmit: options.skipSubmit,
         noBump: options.noBump,
         allowPrebuild: options.prebuild,
-      }),
-    });
+      });
+    const result = options.json
+      ? await execute()
+      : await withProgressStages({
+          finalLabel: "Release completed",
+          stages: ["Preparing release", "Running build", "Submitting release"],
+          task: execute,
+        });
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -430,15 +438,19 @@ program
   .option("--raw", "Print raw log content", false)
   .option("--json", "Print JSON output", false)
   .action(async (options) => {
-    const result = await withProgressStages({
-      finalLabel: "Logs loaded",
-      stages: ["Loading logs"],
-      task: () => listLogs({
+    const execute = () =>
+      listLogs({
         cwd: process.cwd(),
         latest: options.latest,
         id: options.id,
-      }),
-    });
+      });
+    const result = options.json
+      ? await execute()
+      : await withProgressStages({
+          finalLabel: "Logs loaded",
+          stages: ["Loading logs"],
+          task: execute,
+        });
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -748,15 +760,19 @@ program
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
 
-    const result = await withProgressStages({
-      finalLabel: "Doctor checks completed",
-      stages: ["Running doctor checks"],
-      task: () => runDoctor({
+    const execute = () =>
+      runDoctor({
         cwd: process.cwd(),
         profile: options.profile,
         platform: normalizedPlatform,
-      }),
-    });
+      });
+    const result = options.json
+      ? await execute()
+      : await withProgressStages({
+          finalLabel: "Doctor checks completed",
+          stages: ["Running doctor checks"],
+          task: execute,
+        });
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
