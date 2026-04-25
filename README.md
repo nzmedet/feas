@@ -36,6 +36,11 @@ npm install -g feas
 feas --help
 ```
 
+If your npm config disables install scripts (`--ignore-scripts`), FEAS cannot initialize its bundled Prisma client. Fix by running:
+```bash
+prisma generate --schema "$(npm root -g)/@nzmedet/feas/packages/db/prisma/schema.prisma"
+```
+
 ## Build + Validate
 ```bash
 pnpm typecheck
