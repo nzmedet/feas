@@ -111,24 +111,33 @@ async function readProjectRootFromProjectFile(paths: ProjectPaths): Promise<stri
 
 async function readMetadataTree(metadataRoot: string): Promise<Record<string, { path: string; content: string }>> {
   const platforms: Array<"ios" | "android"> = ["ios", "android"];
-  const locales = ["en-NZ"];
   const result: Record<string, { path: string; content: string }> = {};
 
   for (const platform of platforms) {
-    for (const locale of locales) {
-      const localeRoot = path.join(metadataRoot, platform, locale);
-      if (!(await fileExists(localeRoot))) {
-        continue;
-      }
-      const entries = await fs.readdir(localeRoot, { withFileTypes: true });
+    const platformRoot = path.join(metadataRoot, platform);
+    if (!(await fileExists(platformRoot))) {
+      continue;
+    }
+
+    const queue: string[] = [platformRoot];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const entries = await fs.readdir(current, { withFileTypes: true });
       for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          queue.push(fullPath);
+          continue;
+        }
         if (!entry.isFile()) {
           continue;
         }
-        const filePath = path.join(localeRoot, entry.name);
-        const content = await fs.readFile(filePath, "utf8");
-        const key = `${platform}/${locale}/${entry.name}`;
-        result[key] = { path: filePath, content };
+        if (!entry.name.endsWith(".txt")) {
+          continue;
+        }
+        const content = await fs.readFile(fullPath, "utf8");
+        const key = path.relative(metadataRoot, fullPath).replace(/\\/g, "/");
+        result[key] = { path: fullPath, content };
       }
     }
   }

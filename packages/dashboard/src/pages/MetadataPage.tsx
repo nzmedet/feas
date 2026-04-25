@@ -73,7 +73,7 @@ export function MetadataPage() {
                 onClick={() => setSelectedMetadataFile(key)}
                 type="button"
               >
-                {key}
+                {key.replace(/^ios\//, "").replace(/^android\//, "")}
               </button>
             ))}
           </div>

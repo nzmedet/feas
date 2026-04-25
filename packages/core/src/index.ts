@@ -1088,6 +1088,44 @@ function metadataFileNames(platform: "ios" | "android"): string[] {
   return ["title.txt", "short_description.txt", "full_description.txt", "release_notes.txt", "privacy_policy_url.txt"];
 }
 
+const DEFAULT_METADATA_LOCALE = "en-US";
+const NON_LOCALE_METADATA_DIRECTORIES = new Set(["screenshots", "review_information", "app-previews"]);
+
+function isLocaleDirectoryName(name: string): boolean {
+  return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})+$/i.test(name);
+}
+
+async function listMetadataLocaleRoots(platformMetadataRoot: string): Promise<string[]> {
+  if (!(await fileExists(platformMetadataRoot))) {
+    return [];
+  }
+
+  const entries = await fs.readdir(platformMetadataRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => !NON_LOCALE_METADATA_DIRECTORIES.has(name))
+    .filter((name) => isLocaleDirectoryName(name))
+    .sort()
+    .map((name) => path.join(platformMetadataRoot, name));
+}
+
+async function resolveMetadataLocaleRoot(platformMetadataRoot: string): Promise<string> {
+  const localeRoots = await listMetadataLocaleRoots(platformMetadataRoot);
+  if (localeRoots.length > 0) {
+    return localeRoots[0];
+  }
+  return path.join(platformMetadataRoot, DEFAULT_METADATA_LOCALE);
+}
+
+async function listOrDefaultMetadataLocaleRoots(platformMetadataRoot: string): Promise<string[]> {
+  const localeRoots = await listMetadataLocaleRoots(platformMetadataRoot);
+  if (localeRoots.length > 0) {
+    return localeRoots;
+  }
+  return [path.join(platformMetadataRoot, DEFAULT_METADATA_LOCALE)];
+}
+
 async function runCommand(command: string, args: string[], cwd: string, extraEnv?: Record<string, string>): Promise<CommandExecutionResult> {
   try {
     const result = await execFileAsync(command, args, {
@@ -2369,17 +2407,7 @@ export async function runMetadataPull(options: { cwd: string; platform: "ios" | 
   }
   const internalConfig = await readInternalConfig(internalConfigPath);
 
-  const metadataRoot = path.join(projectPath, "metadata", options.platform, "en-NZ");
-  await fs.mkdir(metadataRoot, { recursive: true });
-
-  const files: string[] = [];
-  for (const fileName of metadataFileNames(options.platform)) {
-    const filePath = path.join(metadataRoot, fileName);
-    if (!(await fileExists(filePath))) {
-      await fs.writeFile(filePath, "", "utf8");
-    }
-    files.push(filePath);
-  }
+  const platformMetadataRoot = path.join(projectPath, "metadata", options.platform);
 
   if (process.env.FEAS_METADATA_REAL === "1") {
     const realResult = await runMetadataFastlane({
@@ -2389,8 +2417,10 @@ export async function runMetadataPull(options: { cwd: string; platform: "ios" | 
       projectPath,
       platform: options.platform,
       mode: "pull",
-      metadataRoot: path.join(projectPath, "metadata", options.platform),
+      metadataRoot: platformMetadataRoot,
     });
+    const metadataRoot = await resolveMetadataLocaleRoot(platformMetadataRoot);
+    const files = metadataFileNames(options.platform).map((fileName) => path.join(metadataRoot, fileName));
     return {
       project: detection,
       platform: options.platform,
@@ -2399,6 +2429,17 @@ export async function runMetadataPull(options: { cwd: string; platform: "ios" | 
       mode: "real",
       logPath: realResult.logPath,
     };
+  }
+
+  const metadataRoot = await resolveMetadataLocaleRoot(platformMetadataRoot);
+  await fs.mkdir(metadataRoot, { recursive: true });
+  const files: string[] = [];
+  for (const fileName of metadataFileNames(options.platform)) {
+    const filePath = path.join(metadataRoot, fileName);
+    if (!(await fileExists(filePath))) {
+      await fs.writeFile(filePath, "", "utf8");
+    }
+    files.push(filePath);
   }
 
   return {
@@ -2420,8 +2461,9 @@ export async function runMetadataValidate(options: {
     throw new Error("Project is not initialized. Run `feas init` before metadata operations.");
   }
 
-  const metadataRoot = path.join(projectPath, "metadata", options.platform, "en-NZ");
-  const files = metadataFileNames(options.platform).map((name) => path.join(metadataRoot, name));
+  const platformMetadataRoot = path.join(projectPath, "metadata", options.platform);
+  const localeRoots = await listOrDefaultMetadataLocaleRoots(platformMetadataRoot);
+  const files = localeRoots.flatMap((localeRoot) => metadataFileNames(options.platform).map((name) => path.join(localeRoot, name)));
   const missingFiles: string[] = [];
 
   for (const filePath of files) {
@@ -2438,7 +2480,7 @@ export async function runMetadataValidate(options: {
   return {
     project: detection,
     platform: options.platform,
-    metadataRoot,
+    metadataRoot: platformMetadataRoot,
     files,
     valid: missingFiles.length === 0,
     missingFiles,

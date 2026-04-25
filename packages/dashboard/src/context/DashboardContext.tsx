@@ -128,7 +128,10 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [actionMessageKind, setActionMessageKind] = useState<MessageKind>("success");
 
   const token = useMemo(() => tokenFromUrl(), []);
-  const metadataKeys = useMemo(() => Object.keys(metadata).sort(), [metadata]);
+  const metadataKeys = useMemo(
+    () => Object.keys(metadata).filter((key) => key.startsWith(`${metadataPlatform}/`)).sort(),
+    [metadata, metadataPlatform],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
