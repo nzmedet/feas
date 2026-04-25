@@ -129,10 +129,10 @@ feas clean
 Start local API + dashboard:
 
 ```bash
-feas open --port 4545
+feas open [--port 4545]
 ```
 
-Open the printed URL (includes required token query parameter).
+Open the printed URL.
 
 ## Troubleshooting
 
