@@ -28,6 +28,13 @@ function runFeas(args, options) {
   };
 }
 
+function parseTrailingJson(stdout) {
+  const trimmed = stdout.trim();
+  const start = trimmed.lastIndexOf("\n{");
+  const candidate = start >= 0 ? trimmed.slice(start + 1) : trimmed;
+  return JSON.parse(candidate);
+}
+
 test("cli smoke: init/config/build/submit/release/metadata", async () => {
   const sandbox = await mkdtemp(path.join(os.tmpdir(), "feas-smoke-"));
   const appDir = path.join(sandbox, "app");
@@ -132,7 +139,7 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
 
     const configResult = runFeas(["config", "--json"], { cwd: appDir, feasHome });
     assert.equal(configResult.status, 0, `config failed: ${configResult.stderr}`);
-    const config = JSON.parse(configResult.stdout);
+    const config = parseTrailingJson(configResult.stdout);
     assert.equal(config.project.displayName, "Smoke App");
     assert.equal(config.project.platforms.ios, true);
     assert.equal(config.project.platforms.android, true);
@@ -175,7 +182,7 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
 
     const buildResult = runFeas(["build", "all", "--dry-run", "--json"], { cwd: appDir, feasHome });
     assert.equal(buildResult.status, 0, `build failed: ${buildResult.stderr}`);
-    const buildPayload = JSON.parse(buildResult.stdout);
+    const buildPayload = parseTrailingJson(buildResult.stdout);
     assert.equal(Array.isArray(buildPayload.builds), true);
     assert.equal(buildPayload.builds.length, 2);
 
@@ -188,12 +195,12 @@ test("cli smoke: init/config/build/submit/release/metadata", async () => {
       feasHome,
     });
     assert.equal(submitResult.status, 0, `submit failed: ${submitResult.stderr}`);
-    const submitPayload = JSON.parse(submitResult.stdout);
+    const submitPayload = parseTrailingJson(submitResult.stdout);
     assert.equal(submitPayload.submission.status, "success");
 
     const releaseResult = runFeas(["release", "ios", "--dry-run", "--skip-submit", "--json"], { cwd: appDir, feasHome });
     assert.equal(releaseResult.status, 0, `release failed: ${releaseResult.stderr}`);
-    const releasePayload = JSON.parse(releaseResult.stdout);
+    const releasePayload = parseTrailingJson(releaseResult.stdout);
     assert.equal(Array.isArray(releasePayload.releases), true);
     assert.equal(releasePayload.releases.length, 1);
     assert.equal(releasePayload.releases[0].platform, "ios");
