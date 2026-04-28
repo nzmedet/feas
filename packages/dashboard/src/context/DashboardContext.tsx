@@ -185,12 +185,15 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         android: credentialsPayload.android,
       });
 
-      const preferredLogId = selectedLogId || logsPayload.logs[0]?.id;
+      const preferredLogId = logsPayload.logs.some((log) => log.id === selectedLogId)
+        ? selectedLogId
+        : logsPayload.logs[0]?.id;
       if (preferredLogId) {
         const logPayload = await apiGet<{ content: string }>(`/api/projects/${current.id}/logs/${encodeURIComponent(preferredLogId)}`, token);
         setSelectedLogId(preferredLogId);
         setLatestLogContent(logPayload.content || "No content");
       } else {
+        setSelectedLogId("");
         setLatestLogContent("No logs found.");
       }
     } catch (err) {
