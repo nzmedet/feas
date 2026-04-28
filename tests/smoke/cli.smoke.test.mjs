@@ -327,7 +327,7 @@ test("cli smoke: app.config-only hybrid detection and missing release profile", 
       feasHome,
     });
     assert.notEqual(missingProfileResult.status, 0);
-    assert.match(missingProfileResult.stderr, /Build profile 'staging' not found in eas\.json\. Create build\.staging before running release\./);
+    assert.match(missingProfileResult.stderr, /FEAS supports only 'production' profile for release\./);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }

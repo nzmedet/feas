@@ -6,7 +6,6 @@ import {
   DropdownItem,
   DropdownMenu,
   DropdownTrigger,
-  Input,
   Select,
   SelectItem,
 } from "@heroui/react";
@@ -30,8 +29,6 @@ export function BuildsPage() {
     builds,
     runPlatform,
     setRunPlatform,
-    runProfile,
-    setRunProfile,
     runDryRun,
     setRunDryRun,
     allowPrebuild,
@@ -72,14 +69,6 @@ export function BuildsPage() {
                   </SelectItem>
                 ))}
               </Select>
-              <Input
-                size="sm"
-                label="Profile"
-                labelPlacement="outside"
-                value={runProfile}
-                onValueChange={setRunProfile}
-                placeholder="production"
-              />
               <Select
                 label="Mode"
                 labelPlacement="outside"
@@ -136,8 +125,11 @@ export function BuildsPage() {
                     </td>
                   </tr>
                 ) : (
-                  builds.map((row) => (
-                    <tr key={row.id} className="border-b border-white/5 align-top transition hover:bg-white/5">
+                  builds.map((row) => {
+                    const submitAllowed = row.platform !== "ios" || row.profile === "production";
+
+                    return (
+                      <tr key={row.id} className="border-b border-white/5 align-top transition hover:bg-white/5">
                       <td className="py-2">
                         <div className="truncate text-[15px] font-medium text-slate-100" title={row.id}>
                           {row.platform.toUpperCase()} build {row.buildNumber ? `#${row.buildNumber}` : ""}
@@ -186,7 +178,13 @@ export function BuildsPage() {
                               }
                             }}
                           >
-                            <DropdownItem key="submit">Submit build</DropdownItem>
+                            <DropdownItem
+                              key="submit"
+                              isDisabled={!submitAllowed}
+                              description={!submitAllowed ? "iOS submit requires a production build profile." : undefined}
+                            >
+                              Submit build
+                            </DropdownItem>
                             <DropdownItem key="rebuild">Rebuild</DropdownItem>
                             <DropdownItem key="logs">Open logs page</DropdownItem>
                             <DropdownItem key="delete" color="danger" className="text-danger">
@@ -195,8 +193,9 @@ export function BuildsPage() {
                           </DropdownMenu>
                         </Dropdown>
                       </td>
-                    </tr>
-                  ))
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

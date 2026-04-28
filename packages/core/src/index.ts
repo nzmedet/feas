@@ -16,7 +16,7 @@ export interface FeasProjectInfo {
   rootPath: string;
   packageName: string;
   displayName: string;
-  easJsonPath: string;
+  easJsonPath: string | null;
   expoConfigPath: string | null;
   projectType: "expo" | "react-native" | "hybrid" | "unknown";
   configSources: string[];
@@ -272,6 +272,16 @@ interface EasConfig {
   cli?: {
     version?: string;
   };
+}
+
+const PRODUCTION_PROFILE = "production";
+
+function enforceProductionProfile(profile: string | undefined, operation: string): string {
+  const resolved = (profile ?? PRODUCTION_PROFILE).trim() || PRODUCTION_PROFILE;
+  if (resolved !== PRODUCTION_PROFILE) {
+    throw new Error(`FEAS supports only '${PRODUCTION_PROFILE}' profile for ${operation}.`);
+  }
+  return PRODUCTION_PROFILE;
 }
 
 interface PackageJson {
@@ -584,8 +594,8 @@ function detectProjectType(packageJson: PackageJson, appConfigPath: string | nul
   return "unknown";
 }
 
-function hasEasPlatformConfig(easConfig: EasConfig, platform: "ios" | "android"): boolean {
-  if (!easConfig.build) {
+function hasEasPlatformConfig(easConfig: EasConfig | undefined, platform: "ios" | "android"): boolean {
+  if (!easConfig?.build) {
     return false;
   }
 
@@ -709,11 +719,8 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
   }
 
   const easJsonPath = path.join(rootPath, "eas.json");
-  if (!(await fileExists(easJsonPath))) {
-    throw new Error("Missing eas.json. FEAS requires eas.json for profile resolution.");
-  }
-
-  const easConfig = await readJsonFile<EasConfig>(easJsonPath);
+  const hasEasJson = await fileExists(easJsonPath);
+  const easConfig = hasEasJson ? await readJsonFile<EasConfig>(easJsonPath) : {};
   const { appConfigPath, appConfigSources, appConfig } = await readAppJsonConfig(rootPath);
 
   const iosDirPath = path.join(rootPath, "ios");
@@ -730,7 +737,7 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
     hasEasPlatformConfig(easConfig, "android");
 
   if (!iosDetected && !androidDetected) {
-    throw new Error("No iOS or Android platform detected. Ensure native folders or eas.json platform config exists.");
+    throw new Error("No iOS or Android platform detected. Ensure native folders or platform config exists.");
   }
 
   const displayName =
@@ -743,7 +750,7 @@ async function detectProject(cwd: string): Promise<{ detection: FeasProjectInfo;
       rootPath,
       packageName: packageJson.name,
       displayName,
-      easJsonPath,
+      easJsonPath: hasEasJson ? easJsonPath : null,
       expoConfigPath: appConfigPath,
       projectType: detectProjectType(packageJson, appConfigPath),
       configSources: appConfigSources,
@@ -1541,7 +1548,7 @@ async function buildInternalConfig(result: {
 }
 
 export async function initFeasProject(options: InitFeasProjectOptions): Promise<InitFeasProjectResult> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "init");
   const { detection } = await detectProject(options.cwd);
   const { projectId, feasHomePath, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
 
@@ -1622,7 +1629,7 @@ export async function initFeasProject(options: InitFeasProjectOptions): Promise<
 }
 
 export async function resolveFeasConfig(options: { cwd: string; profile?: string }): Promise<Record<string, unknown>> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "config");
   const { detection, easConfig } = await detectProject(options.cwd);
   const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
 
@@ -1670,7 +1677,7 @@ export async function resolveFeasConfig(options: { cwd: string; profile?: string
 }
 
 export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "build");
   const dryRun = options.dryRun ?? false;
   const { detection, easConfig } = await detectProject(options.cwd);
   const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
@@ -1681,9 +1688,6 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
   const internalConfig = await readInternalConfig(internalConfigPath);
 
   const selectedBuildProfile = easConfig.build?.[profile];
-  if (!selectedBuildProfile) {
-    throw new Error(`Build profile '${profile}' not found in eas.json.`);
-  }
 
   await ensureProjectDatabase({
     databasePath,
@@ -1725,7 +1729,7 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
     const command = buildCommandForPlatform(platform);
     const timestamp = timestampForFileName(startedAt);
     const artifactExtension = platform === "ios" ? "ipa" : "aab";
-    const profileEnv = resolveBuildProfileEnv(selectedBuildProfile, platform);
+    const profileEnv = resolveBuildProfileEnv(selectedBuildProfile ?? {}, platform);
     const artifactPath = path.join(
       projectPath,
       "artifacts",
@@ -1904,10 +1908,14 @@ export async function runBuild(options: RunBuildOptions): Promise<RunBuildResult
 }
 
 export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitResult> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "submit");
   const dryRun = options.dryRun ?? false;
-  const { detection, easConfig } = await detectProject(options.cwd);
+  const { detection } = await detectProject(options.cwd);
   const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
+
+  if (options.platform === "ios" && profile !== "production") {
+    throw new Error("iOS App Store submission requires build profile 'production'.");
+  }
 
   if (!(await fileExists(internalConfigPath))) {
     throw new Error("Project is not initialized. Run `feas init` before running submit.");
@@ -1921,11 +1929,6 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
   const resolvedArtifactPath = path.resolve(options.cwd, options.path);
   if (!(await fileExists(resolvedArtifactPath))) {
     throw new Error(`Artifact not found at ${resolvedArtifactPath}.`);
-  }
-
-  const submitProfile = easConfig.submit?.[profile];
-  if (!submitProfile) {
-    throw new Error(`Submit profile '${profile}' not found in eas.json.`);
   }
 
   await ensureProjectDatabase({
@@ -2090,20 +2093,16 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
 }
 
 export async function runRelease(options: RunReleaseOptions): Promise<RunReleaseResult> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "release");
   const dryRun = options.dryRun ?? false;
   const skipSubmit = options.skipSubmit ?? false;
-  const { detection, easConfig } = await detectProject(options.cwd);
+  const { detection } = await detectProject(options.cwd);
   const { projectId, projectPath, databasePath, internalConfigPath } = resolveProjectStoragePaths(detection);
 
   if (!(await fileExists(internalConfigPath))) {
     throw new Error("Project is not initialized. Run `feas init` before running release.");
   }
   const internalConfig = await readInternalConfig(internalConfigPath);
-  if (!easConfig.build?.[profile]) {
-    throw new Error(`Build profile '${profile}' not found in eas.json. Create build.${profile} before running release.`);
-  }
-
   const targetPlatforms: Array<"ios" | "android"> = [];
   if (options.platform === "all") {
     if (detection.platforms.ios) {
@@ -2715,10 +2714,10 @@ export async function cleanProject(options: { cwd: string; all?: boolean }): Pro
 }
 
 export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorResult> {
-  const profile = options.profile ?? "production";
+  const profile = enforceProductionProfile(options.profile, "doctor");
   const platform = options.platform ?? "all";
 
-  const { detection, easConfig } = await detectProject(options.cwd);
+  const { detection } = await detectProject(options.cwd);
   const checks: DoctorCheck[] = [];
 
   const nodeVersion = process.versions.node;
@@ -2751,14 +2750,12 @@ export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorRes
     fixCommand: lockCount <= 1 ? undefined : "Remove extra lockfiles and keep one package manager.",
   });
 
-  const easProfileExists = Boolean(easConfig.build?.[profile]);
   checks.push({
     id: "general_profile_exists",
     category: "general",
-    name: "EAS build profile",
-    status: easProfileExists ? "pass" : "fail",
-    message: easProfileExists ? `build.${profile} found in eas.json.` : `build.${profile} missing in eas.json.`,
-    fixCommand: easProfileExists ? undefined : `Add build.${profile} to eas.json or run with --profile <existing-profile>.`,
+    name: "Build profile",
+    status: "pass",
+    message: "FEAS is operating in production-only mode.",
   });
 
   checks.push({
@@ -2844,7 +2841,7 @@ export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorRes
       name: "iOS platform detected",
       status: detection.platforms.ios ? "pass" : "fail",
       message: detection.platforms.ios ? "iOS configuration detected." : "No iOS configuration detected.",
-      fixCommand: detection.platforms.ios ? undefined : "Add iOS native config or iOS entries in eas.json/app config.",
+      fixCommand: detection.platforms.ios ? undefined : "Add iOS native config or iOS entries in app config.",
     });
 
     if (isMac) {
@@ -2895,7 +2892,7 @@ export async function runDoctor(options: RunDoctorOptions): Promise<RunDoctorRes
       name: "Android platform detected",
       status: detection.platforms.android ? "pass" : "fail",
       message: detection.platforms.android ? "Android configuration detected." : "No Android configuration detected.",
-      fixCommand: detection.platforms.android ? undefined : "Add Android native config or Android entries in eas.json/app config.",
+      fixCommand: detection.platforms.android ? undefined : "Add Android native config or Android entries in app config.",
     });
 
     const javaInstalled = await commandExists("java");

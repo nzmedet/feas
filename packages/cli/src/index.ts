@@ -24,6 +24,15 @@ import {
 import { Command } from "commander";
 
 const program = new Command();
+const PRODUCTION_PROFILE = "production";
+
+function resolveProductionProfile(profile: string | undefined, commandName: string): string {
+  const resolved = (profile ?? PRODUCTION_PROFILE).trim() || PRODUCTION_PROFILE;
+  if (resolved !== PRODUCTION_PROFILE) {
+    throw new Error(`FEAS supports only '${PRODUCTION_PROFILE}' profile for ${commandName}.`);
+  }
+  return PRODUCTION_PROFILE;
+}
 
 function resolveCliVersion(): string {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -194,12 +203,13 @@ program
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--force", "Regenerate FEAS project state", false)
   .action(async (options) => {
+    const profile = resolveProductionProfile(options.profile, "init");
     const result = await withProgressStages({
       finalLabel: "Project initialized",
       stages: ["Detecting project", "Creating FEAS state", "Preparing local database"],
       task: () => initFeasProject({
         cwd: process.cwd(),
-        profile: options.profile,
+        profile,
         force: options.force,
       }),
     });
@@ -217,9 +227,10 @@ program
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--json", "Print JSON output", false)
   .action(async (options) => {
+    const profile = resolveProductionProfile(options.profile, "config");
     const config = await resolveFeasConfig({
       cwd: process.cwd(),
-      profile: options.profile,
+      profile,
     });
 
     if (options.json) {
@@ -229,14 +240,14 @@ program
 
     const project = config.project as Record<string, unknown>;
     const platforms = project.platforms as Record<string, boolean>;
-    const profile = config.profile as string;
+    const currentProfile = config.profile as string;
     const projectId = config.projectId as string;
     const paths = config.paths as Record<string, string>;
 
     process.stdout.write(`Project: ${project.displayName}\n`);
     process.stdout.write(`Project ID: ${projectId}\n`);
     process.stdout.write(`Root: ${project.rootPath}\n`);
-    process.stdout.write(`Profile: ${profile}\n`);
+    process.stdout.write(`Profile: ${currentProfile}\n`);
     process.stdout.write(`State Path: ${paths.projectPath}\n`);
     process.stdout.write(`Platform iOS: ${platforms.ios ? "yes" : "no"}\n`);
     process.stdout.write(`Platform Android: ${platforms.android ? "yes" : "no"}\n`);
@@ -251,6 +262,7 @@ program
   .option("--prebuild", "Allow FEAS to run Expo prebuild when native folders are missing", false)
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
+    const profile = resolveProductionProfile(options.profile, "build");
     if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
     }
@@ -259,7 +271,7 @@ program
       const result = await runBuild({
         cwd: process.cwd(),
         platform: platformArg,
-        profile: options.profile,
+        profile,
         dryRun: options.dryRun,
         allowPrebuild: options.prebuild,
       });
@@ -271,7 +283,7 @@ program
       runBuild({
         cwd: process.cwd(),
         platform: platformArg,
-        profile: options.profile,
+        profile,
         dryRun: options.dryRun,
         allowPrebuild: options.prebuild,
       }),
@@ -313,6 +325,7 @@ program
   .option("--dry-run", "Preview submit without calling store APIs", false)
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
+    const profile = resolveProductionProfile(options.profile, "submit");
     if (platformArg !== "ios" && platformArg !== "android") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios or android.`);
     }
@@ -322,7 +335,7 @@ program
         cwd: process.cwd(),
         platform: platformArg,
         path: options.path,
-        profile: options.profile,
+        profile,
         dryRun: options.dryRun,
       });
     const result = options.json
@@ -372,6 +385,7 @@ program
   .option("--prebuild", "Allow FEAS to run Expo prebuild when native folders are missing", false)
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
+    const profile = resolveProductionProfile(options.profile, "release");
     if (platformArg !== "ios" && platformArg !== "android" && platformArg !== "all") {
       throw new Error(`Invalid platform '${platformArg}'. Use ios, android, or all.`);
     }
@@ -380,7 +394,7 @@ program
       runRelease({
         cwd: process.cwd(),
         platform: platformArg,
-        profile: options.profile,
+        profile,
         dryRun: options.dryRun,
         skipSubmit: options.skipSubmit,
         noBump: options.noBump,
@@ -753,6 +767,7 @@ program
   .option("--profile <profile>", "EAS profile to use", "production")
   .option("--json", "Print JSON output", false)
   .action(async (platformArg, options) => {
+    const profile = resolveProductionProfile(options.profile, "doctor");
     const normalizedPlatform =
       platformArg === "ios" || platformArg === "android" ? platformArg : ("all" as const);
 
@@ -763,7 +778,7 @@ program
     const execute = () =>
       runDoctor({
         cwd: process.cwd(),
-        profile: options.profile,
+        profile,
         platform: normalizedPlatform,
       });
     const result = options.json

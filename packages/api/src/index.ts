@@ -25,6 +25,8 @@ import {
   getReleaseById,
 } from "feas-db";
 
+const PRODUCTION_PROFILE = "production";
+
 export interface StartLocalApiServerOptions {
   port: number;
   token?: string;
@@ -472,7 +474,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
 
     const result = await initFeasProject({
       cwd: body.rootPath,
-      profile: body.profile,
+      profile: PRODUCTION_PROFILE,
       force: body.force,
     });
     return result;
@@ -545,7 +547,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     const result = await runBuild({
       cwd: projectRoot,
       platform: body.platform ?? "all",
-      profile: body.profile,
+      profile: PRODUCTION_PROFILE,
       dryRun: body.dryRun,
       allowPrebuild: body.allowPrebuild,
     });
@@ -577,7 +579,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     const result = await runBuild({
       cwd: projectRoot,
       platform,
-      profile: build.profile ?? undefined,
+      profile: PRODUCTION_PROFILE,
       dryRun: body.dryRun,
       allowPrebuild: body.allowPrebuild,
     });
@@ -615,11 +617,16 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       return;
     }
 
+    if (build.platform === "ios" && build.profile !== "production") {
+      reply.code(400).send({ error: "ios_submission_requires_production_build" });
+      return;
+    }
+
     const result = await runSubmit({
       cwd: projectRoot,
       platform: build.platform,
       path: build.artifactPath,
-      profile: body.profile ?? build.profile ?? undefined,
+      profile: PRODUCTION_PROFILE,
       dryRun: body.dryRun,
     });
     return result;
@@ -687,7 +694,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     const result = await runRelease({
       cwd: projectRoot,
       platform: body.platform ?? "all",
-      profile: body.profile,
+      profile: PRODUCTION_PROFILE,
       dryRun: body.dryRun,
       skipSubmit: body.skipSubmit,
       allowPrebuild: body.allowPrebuild,
@@ -730,7 +737,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
       cwd: projectRoot,
       platform: body.platform,
       path: body.path,
-      profile: body.profile,
+      profile: PRODUCTION_PROFILE,
       dryRun: body.dryRun,
     });
     return result;
@@ -760,7 +767,7 @@ export async function startLocalApiServer(options: StartLocalApiServerOptions): 
     const result = await runDoctor({
       cwd: projectRoot,
       platform: body.platform ?? "all",
-      profile: body.profile,
+      profile: PRODUCTION_PROFILE,
     });
     return result;
   });
