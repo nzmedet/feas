@@ -169,7 +169,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           apiGet<{ submissions: SubmissionRow[] }>(`/api/projects/${current.id}/submissions`, token),
           apiGet<{ checks: DoctorRow[] }>(`/api/projects/${current.id}/doctor`, token),
           apiGet<{ logs: LogRow[] }>(`/api/projects/${current.id}/logs`, token),
-          apiGet<{ metadata: MetadataPayload }>(`/api/projects/${current.id}/metadata`, token),
+          apiGet<{ metadata: MetadataPayload }>(`/api/projects/${current.id}/metadata`, token).catch(() => ({ metadata: {} })),
           apiGet<CredentialsPayload & { project: unknown }>(`/api/projects/${current.id}/credentials`, token),
         ]);
 

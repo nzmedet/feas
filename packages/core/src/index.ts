@@ -632,6 +632,29 @@ function credentialsKey(projectId: string, platform: "ios" | "android", name: st
   return `projects.${projectId}.${platform}.${name}`;
 }
 
+function globalCredentialsKey(platform: "ios" | "android", name: string): string {
+  return `global.${platform}.${name}`;
+}
+
+async function getCredentialValue(options: {
+  store: SecretStore;
+  projectId: string;
+  platform: "ios" | "android";
+  name: string;
+}): Promise<string | undefined> {
+  const projectValue = await options.store.get(credentialsKey(options.projectId, options.platform, options.name));
+  if (projectValue && projectValue.trim().length > 0) {
+    return projectValue;
+  }
+
+  const globalValue = await options.store.get(globalCredentialsKey(options.platform, options.name));
+  if (globalValue && globalValue.trim().length > 0) {
+    return globalValue;
+  }
+
+  return undefined;
+}
+
 function credentialProfileKey(platform: "ios" | "android", profileName: string, name: string): string {
   return `accounts.${platform}.${profileName}.${name}`;
 }
@@ -1971,9 +1994,9 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
     let submitEnv: Record<string, string> = {};
 
     if (options.platform === "ios") {
-      const keyId = await secretStore.get(credentialsKey(projectId, "ios", "key_id"));
-      const issuerId = await secretStore.get(credentialsKey(projectId, "ios", "issuer_id"));
-      const privateKeyPath = await secretStore.get(credentialsKey(projectId, "ios", "private_key_path"));
+      const keyId = await getCredentialValue({ store: secretStore, projectId, platform: "ios", name: "key_id" });
+      const issuerId = await getCredentialValue({ store: secretStore, projectId, platform: "ios", name: "issuer_id" });
+      const privateKeyPath = await getCredentialValue({ store: secretStore, projectId, platform: "ios", name: "private_key_path" });
 
       if (!keyId || !issuerId || !privateKeyPath) {
         status = "failed";
@@ -1992,7 +2015,12 @@ export async function runSubmit(options: RunSubmitOptions): Promise<RunSubmitRes
         };
       }
     } else {
-      const serviceAccountPath = await secretStore.get(credentialsKey(projectId, "android", "service_account_path"));
+      const serviceAccountPath = await getCredentialValue({
+        store: secretStore,
+        projectId,
+        platform: "android",
+        name: "service_account_path",
+      });
       const packageName = internalConfig.platforms.android?.playPackageName ?? detection.bundleIdentifiers.android;
       if (!serviceAccountPath || !packageName) {
         status = "failed";
@@ -2339,9 +2367,14 @@ async function runMetadataFastlane(options: {
   const secretStore = getSecretStore();
   let env: Record<string, string> = {};
   if (options.platform === "ios") {
-    const keyId = await secretStore.get(credentialsKey(options.projectId, "ios", "key_id"));
-    const issuerId = await secretStore.get(credentialsKey(options.projectId, "ios", "issuer_id"));
-    const privateKeyPath = await secretStore.get(credentialsKey(options.projectId, "ios", "private_key_path"));
+    const keyId = await getCredentialValue({ store: secretStore, projectId: options.projectId, platform: "ios", name: "key_id" });
+    const issuerId = await getCredentialValue({ store: secretStore, projectId: options.projectId, platform: "ios", name: "issuer_id" });
+    const privateKeyPath = await getCredentialValue({
+      store: secretStore,
+      projectId: options.projectId,
+      platform: "ios",
+      name: "private_key_path",
+    });
     const appIdentifier = options.internalConfig.platforms.ios?.bundleIdentifier ?? options.detection.bundleIdentifiers.ios;
     if (!keyId || !issuerId || !privateKeyPath || !appIdentifier) {
       throw new Error("Missing iOS metadata credentials. Run `feas credentials ios ...` or set FEAS_SECRET_* values.");
@@ -2353,7 +2386,12 @@ async function runMetadataFastlane(options: {
       FEAS_IOS_APP_IDENTIFIER: appIdentifier,
     };
   } else {
-    const serviceAccountPath = await secretStore.get(credentialsKey(options.projectId, "android", "service_account_path"));
+    const serviceAccountPath = await getCredentialValue({
+      store: secretStore,
+      projectId: options.projectId,
+      platform: "android",
+      name: "service_account_path",
+    });
     const packageName = options.internalConfig.platforms.android?.playPackageName ?? options.detection.bundleIdentifiers.android;
     if (!serviceAccountPath || !packageName) {
       throw new Error("Missing Android metadata credentials/package name. Run `feas credentials android ...` and verify app id.");
@@ -2554,6 +2592,9 @@ export async function configureIosCredentials(options: ConfigureIosCredentialsOp
   await store.set(credentialsKey(projectId, "ios", "key_id"), keyId);
   await store.set(credentialsKey(projectId, "ios", "issuer_id"), issuerId);
   await store.set(credentialsKey(projectId, "ios", "private_key_path"), privateKeyPath);
+  await store.set(globalCredentialsKey("ios", "key_id"), keyId);
+  await store.set(globalCredentialsKey("ios", "issuer_id"), issuerId);
+  await store.set(globalCredentialsKey("ios", "private_key_path"), privateKeyPath);
 
   if (options.saveAs) {
     assertCredentialProfileName(options.saveAs);
@@ -2592,6 +2633,7 @@ export async function configureAndroidCredentials(options: ConfigureAndroidCrede
     credentialsKey(projectId, "android", "service_account_path"),
     serviceAccountPath,
   );
+  await store.set(globalCredentialsKey("android", "service_account_path"), serviceAccountPath);
 
   if (options.saveAs) {
     assertCredentialProfileName(options.saveAs);
@@ -2636,7 +2678,7 @@ export async function validateCredentials(options: { cwd: string }): Promise<Cre
 
   const iosMissing: string[] = [];
   for (const key of iosRequired) {
-    const value = await store.get(credentialsKey(projectId, "ios", key));
+    const value = await getCredentialValue({ store, projectId, platform: "ios", name: key });
     if (!value || value.trim().length === 0) {
       iosMissing.push(key);
     }
@@ -2644,7 +2686,7 @@ export async function validateCredentials(options: { cwd: string }): Promise<Cre
 
   const androidMissing: string[] = [];
   for (const key of androidRequired) {
-    const value = await store.get(credentialsKey(projectId, "android", key));
+    const value = await getCredentialValue({ store, projectId, platform: "android", name: key });
     if (!value || value.trim().length === 0) {
       androidMissing.push(key);
     }
