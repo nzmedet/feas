@@ -1,6 +1,6 @@
 {
   "name": "@nzmedet/feas",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": false,
   "description": "Local release automation for Expo and React Native apps.",
   "packageManager": "pnpm@10.0.0",
